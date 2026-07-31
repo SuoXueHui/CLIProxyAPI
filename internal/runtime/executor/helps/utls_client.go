@@ -311,12 +311,19 @@ func (p *utlsTransportPool) reapLoop() {
 }
 
 func utlsTransportPoolKey(proxyURL string, auth *cliproxyauth.Auth) string {
-	if auth == nil || auth.ID == "" {
+	if auth == nil {
+		return proxyURL
+	}
+	scope := auth.ID
+	if scope == "" {
+		scope = auth.Index
+	}
+	if scope == "" {
 		return proxyURL
 	}
 	// Keep credentials from different auth records isolated while still
 	// reusing connections for repeated requests from the same record.
-	return proxyURL + "\x00" + auth.ID
+	return proxyURL + "\x00" + scope
 }
 
 // utlsProtectedHosts contains the hosts that should use utls Chrome TLS fingerprint
