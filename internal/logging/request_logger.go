@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -164,6 +165,9 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 		if configDir != "" {
 			logsDir = filepath.Join(configDir, logsDir)
 		}
+	}
+	if errCleanup := cleanupStaleFileBodySources(logsDir, time.Now()); errCleanup != nil {
+		log.WithError(errCleanup).Warn("failed to clean up stale request body captures")
 	}
 	return &FileRequestLogger{
 		enabled:           enabled,
