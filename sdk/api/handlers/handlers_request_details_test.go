@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"strings"
@@ -15,6 +16,69 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+func TestExecuteWithAuthManager_StaticCodexWithoutAvailableAuthReturns503(t *testing.T) {
+	const model = "gpt-5.6-sol"
+	if providers := registry.GetGlobalRegistry().GetModelProviders(model); len(providers) != 0 {
+		t.Fatalf("test requires no dynamic provider for %s, got %v", model, providers)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	_, _, errMsg := handler.ExecuteWithAuthManager(
+		context.Background(),
+		"openai-response",
+		model,
+		[]byte(`{"model":"gpt-5.6-sol","input":"ping"}`),
+		"",
+	)
+	if errMsg == nil || errMsg.Error == nil {
+		t.Fatal("expected an auth availability error")
+	}
+	if errMsg.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; error=%v", errMsg.StatusCode, http.StatusServiceUnavailable, errMsg.Error)
+	}
+
+	var authErr *coreauth.Error
+	if !errors.As(errMsg.Error, &authErr) || authErr == nil {
+		t.Fatalf("error = %T, want coreauth.Error", errMsg.Error)
+	}
+	if authErr.Code != "auth_not_found" && authErr.Code != "auth_unavailable" {
+		t.Fatalf("auth error code = %q, want auth_not_found or auth_unavailable", authErr.Code)
+	}
+	if !strings.Contains(authErr.Message, "providers=codex") {
+		t.Fatalf("auth error missing codex provider context: %q", authErr.Message)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_StaticCodexWithoutAvailableAuthReturns503(t *testing.T) {
+	const model = "codex-auto-review"
+	if providers := registry.GetGlobalRegistry().GetModelProviders(model); len(providers) != 0 {
+		t.Fatalf("test requires no dynamic provider for %s, got %v", model, providers)
+	}
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(
+		context.Background(),
+		"openai-response",
+		model,
+		[]byte(`{"model":"codex-auto-review","input":"ping","stream":true}`),
+		"",
+	)
+	if dataChan != nil {
+		t.Fatal("data channel should be nil when no Codex auth is available")
+	}
+
+	errMsg, ok := <-errChan
+	if !ok || errMsg == nil || errMsg.Error == nil {
+		t.Fatal("expected a streaming auth availability error")
+	}
+	if errMsg.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("stream status = %d, want %d; error=%v", errMsg.StatusCode, http.StatusServiceUnavailable, errMsg.Error)
+	}
+	if _, open := <-errChan; open {
+		t.Fatal("stream error channel should close after the availability error")
+	}
+}
 
 func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()

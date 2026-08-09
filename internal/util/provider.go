@@ -28,8 +28,8 @@ func OpenAICompatibleProviderKey(name string) string {
 
 // GetProviderName determines all AI service providers capable of serving a registered model.
 // It first queries the global model registry to retrieve the providers backing the supplied model name.
-// When the model has not been registered yet, it falls back to legacy string heuristics to infer
-// potential providers.
+// When no dynamic provider is available, it keeps exact static Codex catalog entries routable so
+// credential availability is decided by the auth scheduler.
 //
 // Supported providers include (but are not limited to):
 //   - "gemini" for Google's Gemini family
@@ -68,6 +68,16 @@ func GetProviderName(modelName string) []string {
 
 	if len(providers) > 0 {
 		return providers
+	}
+
+	// Keep known Codex models routable while the dynamic registry is temporarily
+	// empty because every credential is disabled or exhausted. The auth scheduler
+	// can then return a retryable availability error instead of misclassifying the
+	// model as unknown before credential selection.
+	for _, model := range registry.GetStaticModelDefinitionsByChannel("codex") {
+		if model != nil && strings.TrimSpace(model.ID) == modelName {
+			return []string{"codex"}
+		}
 	}
 
 	return providers
