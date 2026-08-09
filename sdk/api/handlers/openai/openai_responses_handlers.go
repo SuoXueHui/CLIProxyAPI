@@ -583,15 +583,19 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
 			framer.Flush(c.Writer)
-			if !shouldExposeResponsesUpstreamError(errMsg) {
+			if errMsg == nil {
 				return
 			}
+			// HTTP SSE has no transparent reconnect contract. Always surface a
+			// terminal upstream error so downstream proxies cannot treat it as EOF.
 			status := http.StatusInternalServerError
 			if errMsg.StatusCode > 0 {
 				status = errMsg.StatusCode
 			}
 			errText := http.StatusText(status)
-			if errMsg.Error != nil && errMsg.Error.Error() != "" {
+			// Request faults are actionable client feedback. Keep other upstream
+			// details server-side because they may contain internal transport data.
+			if shouldExposeResponsesUpstreamError(errMsg) && errMsg.Error != nil && errMsg.Error.Error() != "" {
 				errText = errMsg.Error.Error()
 			}
 			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)

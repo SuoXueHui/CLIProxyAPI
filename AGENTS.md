@@ -61,3 +61,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Dynamic model-provider registrations remain authoritative when present.
 - When a model exactly matches the static Codex catalog but every Codex credential is disabled, exhausted, or cooling down, keep the model routable to `codex` and let auth selection return HTTP 503. Do not collapse this temporary capacity state into HTTP 400 `model_not_found`.
 - Truly unknown models must continue to return HTTP 400 and must not enter auth retry or failover paths.
+
+## Responses Streaming Semantics
+- HTTP SSE must emit a machine-readable terminal error event after headers are committed; never turn an upstream timeout, disconnect, quota failure, or credential failure into a clean EOF.
+- WebSocket sessions may close silently for retryable upstream failures because reconnect is part of that transport contract. Do not reuse this WebSocket-only behavior for HTTP SSE.
+- Preserve detailed messages for actionable request faults. Use generic status text for non-request failures so internal transport or credential details are not exposed downstream.
