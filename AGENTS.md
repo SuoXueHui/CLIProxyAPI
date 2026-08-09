@@ -56,3 +56,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Use logrus structured logging; avoid leaking secrets/tokens in logs
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
 - Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+
+## Codex Availability Semantics
+- Dynamic model-provider registrations remain authoritative when present.
+- When a model exactly matches the static Codex catalog but every Codex credential is disabled, exhausted, or cooling down, keep the model routable to `codex` and let auth selection return HTTP 503. Do not collapse this temporary capacity state into HTTP 400 `model_not_found`.
+- Truly unknown models must continue to return HTTP 400 and must not enter auth retry or failover paths.
