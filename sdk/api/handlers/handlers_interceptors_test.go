@@ -1323,3 +1323,22 @@ func TestHandlerResponseInterceptorSeesRawHeadersWhenPassthroughDisabled(t *test
 		t.Fatalf("headers leaked raw upstream header with passthrough disabled: %#v", headers)
 	}
 }
+
+func TestRequestAfterAuthCaptureDoesNotCloneUnchangedBody(t *testing.T) {
+	body := []byte("unchanged-request-body")
+	capture := &requestAfterAuthCapture{}
+	capture.record(coreexecutor.RequestAfterAuthInterceptRequest{
+		Headers: http.Header{"X-Original": []string{"value"}},
+		Body:    body,
+	}, coreexecutor.RequestAfterAuthInterceptResponse{
+		Headers: http.Header{"X-Plugin": []string{"set"}},
+	})
+
+	req, opts := capture.apply(coreexecutor.Request{Payload: body}, coreexecutor.Options{})
+	if len(req.Payload) == 0 || &req.Payload[0] != &body[0] {
+		t.Fatal("unchanged request body was cloned or replaced")
+	}
+	if opts.Headers.Get("X-Original") != "value" || opts.Headers.Get("X-Plugin") != "set" {
+		t.Fatalf("headers = %#v, want merged original and plugin headers", opts.Headers)
+	}
+}

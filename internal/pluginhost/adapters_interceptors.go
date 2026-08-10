@@ -96,6 +96,7 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 		Headers: cloneHeader(req.Headers),
 		Body:    bytes.Clone(req.Body),
 	}
+	bodyReplaced := false
 	skipPluginID = strings.TrimSpace(skipPluginID)
 	for _, record := range h.activeRecords() {
 		interceptor := record.plugin.Capabilities.RequestInterceptor
@@ -112,6 +113,7 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 			current.Headers = mergeHeaders(current.Headers, resp.Headers, resp.ClearHeaders)
 			if len(resp.Body) > 0 {
 				current.Body = bytes.Clone(resp.Body)
+				bodyReplaced = true
 			}
 			if resp.Terminate {
 				current.Terminate = true
@@ -121,6 +123,11 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 				break
 			}
 		}
+	}
+	// An empty body means no replacement to callers. Keep the working copy only
+	// while chaining plugins so header-only interception does not duplicate large requests.
+	if !bodyReplaced {
+		current.Body = nil
 	}
 	return current
 }

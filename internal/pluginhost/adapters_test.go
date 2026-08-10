@@ -1359,6 +1359,32 @@ func TestInterceptRequestAfterAuthPassesTargetFormat(t *testing.T) {
 	}
 }
 
+func TestInterceptRequestHeaderOnlyDoesNotReturnBodyReplacement(t *testing.T) {
+	body := []byte("large-request-body")
+	host := newHostWithRecords(capabilityRecord{
+		id: "header-only",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: requestInterceptorFunc(func(_ context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+				if string(req.Body) != string(body) {
+					t.Fatalf("request body = %q, want %q", req.Body, body)
+				}
+				return pluginapi.RequestInterceptResponse{Headers: http.Header{"X-Plugin": []string{"set"}}}, nil
+			}),
+		}},
+	})
+
+	got := host.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{
+		Body: body,
+	})
+
+	if len(got.Body) != 0 {
+		t.Fatalf("body replacement = %q, want empty for header-only interception", got.Body)
+	}
+	if got.Headers.Get("X-Plugin") != "set" {
+		t.Fatalf("headers = %#v, want X-Plugin set", got.Headers)
+	}
+}
+
 func TestInterceptorsSkipExceptedPlugin(t *testing.T) {
 	originCalls := 0
 	otherCalls := 0

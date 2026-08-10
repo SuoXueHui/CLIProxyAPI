@@ -313,7 +313,7 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 		return
 	}
 	headers := mergeRequestInterceptorHeaders(req.Headers, resp.Headers, resp.ClearHeaders)
-	body := cloneBytes(req.Body)
+	var body []byte
 	var originalRequest []byte
 	originalRequestReplaced := false
 	if len(resp.Body) > 0 {
@@ -340,9 +340,9 @@ func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecu
 	if !c.set {
 		return req, opts
 	}
-	req.Payload = cloneBytes(c.body)
 	opts.Headers = cloneHeader(c.headers)
 	if c.originalRequestReplaced {
+		req.Payload = cloneBytes(c.body)
 		opts.OriginalRequest = cloneBytes(c.originalRequest)
 	}
 	return req, opts
