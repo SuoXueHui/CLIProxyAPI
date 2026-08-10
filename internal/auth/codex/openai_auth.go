@@ -333,7 +333,16 @@ func isNonRetryableRefreshErr(err error) bool {
 		return false
 	}
 	raw := strings.ToLower(err.Error())
-	return strings.Contains(raw, "refresh_token_reused")
+	for _, code := range []string{
+		"refresh_token_reused",
+		"refresh_token_invalidated",
+		"refresh_token_expired",
+	} {
+		if strings.Contains(raw, code) {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateTokenStorage updates an existing CodexTokenStorage with new token data.

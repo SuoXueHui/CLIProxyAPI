@@ -521,8 +521,15 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 
 	// Another request may already have refreshed this credential.
 	if failedAccessToken != "" {
-		if currentToken := authAccessToken(auth); currentToken != "" && currentToken != failedAccessToken {
+		currentToken := authAccessToken(auth)
+		if currentToken != "" && currentToken != failedAccessToken {
 			return auth.Clone(), nil
+		}
+		// A concurrent request may already have proven that this exact token cannot
+		// be refreshed. Reuse the permanent failure instead of serially replaying
+		// the same refresh request for every waiter on this credential lock.
+		if currentToken == failedAccessToken && hasUnauthorizedAuthFailure(auth) {
+			return nil, cloneError(auth.LastError)
 		}
 	}
 

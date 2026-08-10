@@ -258,6 +258,36 @@ func TestManager_Execute_UnauthorizedRefreshFailureFallsBackToNextAuth(t *testin
 	}
 }
 
+func TestManager_RefreshAuthForRequest_CachesPermanentUnauthorizedFailure(t *testing.T) {
+	m, executor, primary, _, _ := newUnauthorizedRefreshFixture(t, true)
+
+	const callers = 20
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errRefresh := m.refreshAuthForRequest(context.Background(), primary.ID, "stale-access-token")
+			errs <- errRefresh
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for errRefresh := range errs {
+		if statusCodeFromError(errRefresh) != http.StatusUnauthorized {
+			t.Fatalf("refresh error = %v, want unauthorized", errRefresh)
+		}
+	}
+	if got := executor.RefreshCalls(); got != 1 {
+		t.Fatalf("Refresh calls = %d, want one shared permanent failure", got)
+	}
+}
+
 func TestManager_Execute_UnauthorizedWithoutRefreshTokenDoesNotCallRefresh(t *testing.T) {
 	model := "gpt-5.5"
 	primary := &Auth{
