@@ -18,6 +18,9 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// Retry a truncated collected SSE response once before surfacing the disconnect.
+const xaiNonStreamDisconnectRetries = 1
+
 func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
@@ -43,71 +46,82 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
-	if err != nil {
-		return resp, err
-	}
-	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID)
-	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
-
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
-	}
-	defer func() {
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("xai executor: close response body error: %v", errClose)
+	// The non-stream path buffers the upstream SSE response, so a retry cannot
+	// duplicate bytes already delivered to the downstream client.
+	for attempt := 0; attempt <= xaiNonStreamDisconnectRetries; attempt++ {
+		httpReq, errRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
+		if errRequest != nil {
+			return resp, errRequest
 		}
-	}()
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		data, errRead := io.ReadAll(httpResp.Body)
+		applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID)
+		e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
+
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errDo)
+			return resp, errDo
+		}
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		data, errRead := func() ([]byte, error) {
+			defer func() {
+				if errClose := httpResp.Body.Close(); errClose != nil {
+					log.Errorf("xai executor: close response body error: %v", errClose)
+				}
+			}()
+			return io.ReadAll(httpResp.Body)
+		}()
 		if errRead != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+			if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 && attempt < xaiNonStreamDisconnectRetries && ctx.Err() == nil {
+				helps.LogWithRequestID(ctx).Debugf("xai executor: non-stream response body disconnected, retrying once: %v", errRead)
+				continue
+			}
 			return resp, errRead
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		return resp, xaiStatusErr(httpResp.StatusCode, data)
-	}
-
-	data, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return resp, err
-	}
-	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
-
-	outputItemsByIndex := make(map[int64][]byte)
-	var outputItemsFallback [][]byte
-	responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if !bytes.HasPrefix(line, xaiDataTag) {
-			continue
+		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+			helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+			return resp, xaiStatusErr(httpResp.StatusCode, data)
 		}
-		eventData := xaiNormalizeReasoningSummaryData(bytes.TrimSpace(line[len(xaiDataTag):]))
-		eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
-		eventData = responseFilter.apply(eventData)
-		if len(eventData) == 0 {
-			continue
-		}
-		switch gjson.GetBytes(eventData, "type").String() {
-		case "response.output_item.done":
-			xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-		case "response.completed":
-			if detail, ok := helps.ParseCodexUsage(eventData); ok {
-				reporter.Publish(ctx, detail)
+
+		outputItemsByIndex := make(map[int64][]byte)
+		var outputItemsFallback [][]byte
+		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
+		for _, line := range bytes.Split(data, []byte("\n")) {
+			if !bytes.HasPrefix(line, xaiDataTag) {
+				continue
 			}
-			completedData := xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
-			completedData = xaiNormalizeReasoningSummaryData(completedData)
-			cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, completedData)
-			var param any
-			out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, completedData, &param)
-			return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
+			eventData := xaiNormalizeReasoningSummaryData(bytes.TrimSpace(line[len(xaiDataTag):]))
+			eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
+			eventData = responseFilter.apply(eventData)
+			if len(eventData) == 0 {
+				continue
+			}
+			switch gjson.GetBytes(eventData, "type").String() {
+			case "response.output_item.done":
+				xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
+			case "response.completed":
+				if detail, ok := helps.ParseCodexUsage(eventData); ok {
+					reporter.Publish(ctx, detail)
+				}
+				completedData := xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
+				completedData = xaiNormalizeReasoningSummaryData(completedData)
+				cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, completedData)
+				var param any
+				out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, completedData, &param)
+				return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
+			}
 		}
+
+		disconnectErr := statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
+		helps.RecordAPIResponseError(ctx, e.cfg, disconnectErr)
+		if attempt < xaiNonStreamDisconnectRetries && ctx.Err() == nil {
+			helps.LogWithRequestID(ctx).Debug("xai executor: non-stream response ended before response.completed, retrying once")
+			continue
+		}
+		return resp, disconnectErr
 	}
 
 	return resp, statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
