@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,82 +22,36 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-const (
-	// Keep idle HTTP/2 connections long enough for normal request bursts while
-	// bounding the amount of retained upstream state during quiet periods.
-	utlsIdleConnectionTimeout = 90 * time.Second
-	utlsReaperInterval        = 30 * time.Second
-)
-
-// utlsClientConnection tracks users of one HTTP/2 connection. A response body
-// can outlive RoundTrip, so the connection must not be reaped until the body
-// is fully consumed or closed.
-type utlsClientConnection struct {
-	conn    *http2.ClientConn
-	mu      sync.Mutex
-	refs    int
-	retired bool
-}
-
-func (c *utlsClientConnection) acquire() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.retired {
-		return false
-	}
-	c.refs++
-	return true
-}
-
-func (c *utlsClientConnection) release() {
-	c.mu.Lock()
-	if c.refs > 0 {
-		c.refs--
-	}
-	shouldClose := c.retired && c.refs == 0
-	conn := c.conn
-	c.mu.Unlock()
-	if shouldClose {
-		_ = conn.Close()
-	}
-}
-
-func (c *utlsClientConnection) retire() {
-	c.mu.Lock()
-	c.retired = true
-	shouldClose := c.refs == 0
-	conn := c.conn
-	c.mu.Unlock()
-	if shouldClose {
-		_ = conn.Close()
-	}
-}
-
-func (c *utlsClientConnection) isIdle(now time.Time) bool {
-	c.mu.Lock()
-	if c.retired || c.refs != 0 {
-		c.mu.Unlock()
-		return false
-	}
-	c.mu.Unlock()
-
-	state := c.conn.State()
-	if state.Closed || state.Closing {
-		return true
-	}
-	if state.StreamsActive != 0 || state.StreamsReserved != 0 || state.StreamsPending != 0 || state.LastIdle.IsZero() {
-		return false
-	}
-	return now.Sub(state.LastIdle) >= utlsIdleConnectionTimeout
-}
-
 // utlsRoundTripper implements http.RoundTripper using a Chrome fingerprint for
-// providers that require a browser-like TLS and HTTP/2 transport.
+// providers that require a browser-like TLS and HTTP/2 transport. Each request
+// gets a dedicated connection that is closed with the response body.
 type utlsRoundTripper struct {
-	mu          sync.Mutex
-	connections map[string]*utlsClientConnection
-	pending     map[string]*sync.Cond
-	dialer      proxy.Dialer
+	dialer proxy.Dialer
+}
+
+type closeConnectionBody struct {
+	io.ReadCloser
+	closeConnection func() error
+	once            sync.Once
+	err             error
+}
+
+func (b *closeConnectionBody) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.once.Do(func() {
+		var errConnection error
+		if b.closeConnection != nil {
+			errConnection = b.closeConnection()
+		}
+		var errBody error
+		if b.ReadCloser != nil {
+			errBody = b.ReadCloser.Close()
+		}
+		b.err = errors.Join(errBody, errConnection)
+	})
+	return b.err
 }
 
 func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
@@ -109,130 +64,42 @@ func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
 			dialer = proxyDialer
 		}
 	}
-	return &utlsRoundTripper{
-		connections: make(map[string]*utlsClientConnection),
-		pending:     make(map[string]*sync.Cond),
-		dialer:      dialer,
-	}
+	return &utlsRoundTripper{dialer: dialer}
 }
 
-func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*utlsClientConnection, error) {
-	for {
-		t.mu.Lock()
-
-		if cached, ok := t.connections[host]; ok {
-			if cached.conn.CanTakeNewRequest() && cached.acquire() {
-				t.mu.Unlock()
-				return cached, nil
-			}
-			delete(t.connections, host)
-			t.mu.Unlock()
-			cached.retire()
-			continue
-		}
-
-		if cond, ok := t.pending[host]; ok {
-			cond.Wait()
-			t.mu.Unlock()
-			continue
-		}
-
-		cond := sync.NewCond(&t.mu)
-		t.pending[host] = cond
-		t.mu.Unlock()
-
-		h2Conn, err := t.createConnection(host, addr)
-
-		t.mu.Lock()
-		delete(t.pending, host)
-		cond.Broadcast()
-		if err != nil {
-			t.mu.Unlock()
-			return nil, err
-		}
-
-		tracked := &utlsClientConnection{conn: h2Conn}
-		tracked.acquire()
-		t.connections[host] = tracked
-		t.mu.Unlock()
-		return tracked, nil
+func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*http2.ClientConn, error) {
+	contextDialer, ok := t.dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("utls: dialer does not support context cancellation")
 	}
-}
-
-func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientConn, error) {
-	conn, err := t.dialer.Dial("tcp", addr)
-	if err != nil {
-		return nil, err
+	conn, errDial := contextDialer.DialContext(ctx, "tcp", addr)
+	if errDial != nil {
+		return nil, fmt.Errorf("utls: dial upstream: %w", errDial)
 	}
 
 	tlsConfig := &tls.Config{ServerName: host}
 	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
 
-	if err := tlsConn.Handshake(); err != nil {
-		conn.Close()
-		return nil, err
+	if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
+		if errors.Is(errHandshake, context.Canceled) || errors.Is(errHandshake, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("utls: TLS handshake: %w", errHandshake)
+		}
+		if errClose := conn.Close(); errClose != nil {
+			return nil, fmt.Errorf("utls: TLS handshake: %w; close connection: %v", errHandshake, errClose)
+		}
+		return nil, fmt.Errorf("utls: TLS handshake: %w", errHandshake)
 	}
 
 	tr := &http2.Transport{}
-	h2Conn, err := tr.NewClientConn(tlsConn)
-	if err != nil {
-		tlsConn.Close()
-		return nil, err
+	h2Conn, errClientConn := tr.NewClientConn(tlsConn)
+	if errClientConn != nil {
+		if errClose := tlsConn.Close(); errClose != nil {
+			return nil, fmt.Errorf("utls: initialize HTTP/2 connection: %w; close TLS connection: %v", errClientConn, errClose)
+		}
+		return nil, fmt.Errorf("utls: initialize HTTP/2 connection: %w", errClientConn)
 	}
 
 	return h2Conn, nil
-}
-
-func (t *utlsRoundTripper) retireConnection(host string, connection *utlsClientConnection) {
-	t.mu.Lock()
-	if cached, ok := t.connections[host]; ok && cached == connection {
-		delete(t.connections, host)
-	}
-	t.mu.Unlock()
-	connection.retire()
-}
-
-func (t *utlsRoundTripper) closeIdleConnections(now time.Time) {
-	var idle []*utlsClientConnection
-
-	t.mu.Lock()
-	for host, connection := range t.connections {
-		if connection.isIdle(now) {
-			delete(t.connections, host)
-			idle = append(idle, connection)
-		}
-	}
-	t.mu.Unlock()
-
-	for _, connection := range idle {
-		connection.retire()
-	}
-}
-
-// trackedResponseBody keeps a connection referenced until the caller closes
-// or fully consumes the upstream response body, including streaming responses.
-type trackedResponseBody struct {
-	io.ReadCloser
-	release func()
-	once    sync.Once
-}
-
-func (b *trackedResponseBody) releaseConnection() {
-	b.once.Do(b.release)
-}
-
-func (b *trackedResponseBody) Read(p []byte) (int, error) {
-	n, err := b.ReadCloser.Read(p)
-	if err != nil {
-		b.releaseConnection()
-	}
-	return n, err
-}
-
-func (b *trackedResponseBody) Close() error {
-	err := b.ReadCloser.Close()
-	b.releaseConnection()
-	return err
 }
 
 func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -243,90 +110,32 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(hostname, port)
 
-	connection, err := t.getOrCreateConnection(hostname, addr)
+	h2Conn, err := t.createConnection(req.Context(), hostname, addr)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := connection.conn.RoundTrip(req)
+	resp, err := h2Conn.RoundTrip(req)
 	if err != nil {
-		t.retireConnection(hostname, connection)
-		connection.release()
+		if errClose := h2Conn.Close(); errClose != nil {
+			log.Debugf("utls: close connection after round trip failure: %v", errClose)
+		}
 		return nil, err
+	}
+	if resp == nil {
+		if errClose := h2Conn.Close(); errClose != nil {
+			log.Debugf("utls: close connection after empty response: %v", errClose)
+		}
+		return nil, fmt.Errorf("utls: upstream returned an empty response")
 	}
 	if resp.Body == nil {
-		connection.release()
-		return resp, nil
+		resp.Body = http.NoBody
 	}
-
-	resp.Body = &trackedResponseBody{
-		ReadCloser: resp.Body,
-		release:    connection.release,
+	resp.Body = &closeConnectionBody{
+		ReadCloser:      resp.Body,
+		closeConnection: h2Conn.Close,
 	}
 	return resp, nil
-}
-
-// utlsTransportPool reuses one Chrome uTLS round tripper per proxy/auth scope.
-// The pool is process-local because the transport owns live sockets and cannot
-// be safely serialized or shared across CPA processes.
-type utlsTransportPool struct {
-	mu         sync.Mutex
-	transports map[string]*utlsRoundTripper
-	startOnce  sync.Once
-}
-
-func newUtlsTransportPool() *utlsTransportPool {
-	return &utlsTransportPool{transports: make(map[string]*utlsRoundTripper)}
-}
-
-var defaultUtlsTransportPool = newUtlsTransportPool()
-
-func (p *utlsTransportPool) get(key, proxyURL string) *utlsRoundTripper {
-	p.startOnce.Do(func() {
-		go p.reapLoop()
-	})
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if transport, ok := p.transports[key]; ok {
-		return transport
-	}
-	transport := newUtlsRoundTripper(proxyURL)
-	p.transports[key] = transport
-	return transport
-}
-
-func (p *utlsTransportPool) reapLoop() {
-	ticker := time.NewTicker(utlsReaperInterval)
-	defer ticker.Stop()
-	for now := range ticker.C {
-		p.mu.Lock()
-		transports := make([]*utlsRoundTripper, 0, len(p.transports))
-		for _, transport := range p.transports {
-			transports = append(transports, transport)
-		}
-		p.mu.Unlock()
-
-		for _, transport := range transports {
-			transport.closeIdleConnections(now)
-		}
-	}
-}
-
-func utlsTransportPoolKey(proxyURL string, auth *cliproxyauth.Auth) string {
-	if auth == nil {
-		return proxyURL
-	}
-	scope := auth.ID
-	if scope == "" {
-		scope = auth.Index
-	}
-	if scope == "" {
-		return proxyURL
-	}
-	// Keep credentials from different auth records isolated while still
-	// reusing connections for repeated requests from the same record.
-	return proxyURL + "\x00" + scope
 }
 
 // claudeCodeSessionCacheCapacity bounds the per-transport TLS session cache for
@@ -571,7 +380,7 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var chromeRT http.RoundTripper = defaultUtlsTransportPool.get(utlsTransportPoolKey(proxyURL, auth), proxyURL)
+	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
 	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
 	var standardTransport http.RoundTripper = http.DefaultTransport
 	if proxyURL != "" {
