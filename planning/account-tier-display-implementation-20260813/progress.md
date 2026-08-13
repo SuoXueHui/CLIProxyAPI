@@ -19,3 +19,6 @@
 - 收尾时发现 Manager 镜像被并发任务回切为 `usage-window-f69d13d9-amd64`；已备份 compose/inspect 并重新切换到 `usage-window-0b3fa181-amd64`，回滚目录 `/data/apps/cpa-manager-plus/releases/account-tier-reconcile-20260813T113514Z/`。
 - 最终复核：CPA root=200、未认证 models=401、Manager health=200、auth-files=200；两容器 restart=0/OOM=false，Manager healthy，内嵌 bundle 含 `SuperGrok Heavy`，近 5 分钟无 panic/fatal/OOM。
 - 最终安全汇总已刷新为 Codex `free=28/team=196`、xAI `supergrok_heavy=3/unknown=2`。
+- 最终从 Manager 合并 master `2cf66b31` 重新构建并上线 `cpa-manager-plus:master-account-tier-usage-window-2cf66b31-amd64`，避免之前并发发布相互覆盖。
+- 统一镜像上线后连续三轮验证 CPA root=200、未认证 models=401、Manager health=200；Manager healthy，两容器 restart=0/OOM=false，页面含 `SuperGrok Heavy` 和 `data-account-plan`。
+- Manager 最终回滚目录为 `/data/apps/cpa-manager-plus/releases/account-tier-master-final-20260813T115241Z/`。

@@ -8,7 +8,7 @@
 
 - Codex：复用 auth-file 响应中已有的 `id_token.plan_type`，将套餐展示移出额度成功态。
 - xAI：CLIProxyAPI 仅从显式 metadata 或已加载 access-token JWT 的非敏感 `tier` claim 输出标准化 `xai_plan_type`/`xai_plan_source`；不返回 Token，不凭 `$0/$0` 判断 Free。
-- Manager：统一在卡片级展示套餐 badge；未知证据显式显示 Unknown，额度和错误状态机保持不变。
+- Manager：统一在卡片级展示套餐 badge；缺少可信证据时不展示 badge，额度和错误状态机保持不变。
 
 ## 阶段
 
