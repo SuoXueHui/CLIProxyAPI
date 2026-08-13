@@ -58,8 +58,12 @@ type Handler struct {
 	configReloadHook        func(context.Context, *config.Config)
 	pluginStoreRegistryURL  string
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
-	pluginReleaseCacheMu    sync.Mutex
-	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	// codexQuotaUsageURL and codexQuotaHTTPClient are test seams for the
+	// dedicated, fixed-target Codex quota request. Production leaves both unset.
+	codexQuotaUsageURL   string
+	codexQuotaHTTPClient *http.Client
+	pluginReleaseCacheMu sync.Mutex
+	pluginReleaseCache   map[string]pluginReleaseCacheEntry
 }
 
 type configReloadSnapshot struct {
