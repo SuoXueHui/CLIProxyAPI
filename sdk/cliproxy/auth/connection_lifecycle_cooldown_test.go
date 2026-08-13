@@ -7,10 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func TestManager_MarkResult_ConnectionLifecycleDoesNotCooldown(t *testing.T) {
@@ -297,6 +300,82 @@ func TestIsConnectionLifecycleError_TypedCloseWins(t *testing.T) {
 	assertNoCooldown(t, m, auth.ID, model)
 }
 
+func TestManager_MarkResult_ExplicitConnectionLifecycleMarkerDoesNotCooldown(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-explicit-lifecycle", Provider: "xai"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "grok-4.6"
+	errLifecycle := &explicitConnectionLifecycleError{
+		status:  http.StatusRequestTimeout,
+		message: "xai stream error: stream disconnected before response.completed",
+	}
+	resultErr := resultErrorFromError(errLifecycle)
+	if resultErr.Code != connectionLifecycleErrorCode {
+		t.Fatalf("code = %q, want %q", resultErr.Code, connectionLifecycleErrorCode)
+	}
+
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  false,
+		Error:    resultErr,
+	})
+	assertNoCooldown(t, m, auth.ID, model)
+}
+
+func TestManager_Execute_ExplicitConnectionLifecycleRotatesWithoutCooldown(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(0, 0, 2)
+
+	const (
+		provider = "xai"
+		model    = "grok-4.6"
+	)
+	executor := &authFallbackExecutor{
+		id: provider,
+		executeErrors: map[string]error{
+			"aa-disconnected": &explicitConnectionLifecycleError{
+				status:  http.StatusRequestTimeout,
+				message: "xai stream error: stream disconnected before response.completed",
+			},
+		},
+	}
+	m.RegisterExecutor(executor)
+
+	disconnectedAuth := &Auth{ID: "aa-disconnected", Provider: provider}
+	availableAuth := &Auth{ID: "bb-available", Provider: provider}
+	reg := registry.GetGlobalRegistry()
+	models := []*registry.ModelInfo{{ID: model}}
+	reg.RegisterClient(disconnectedAuth.ID, provider, models)
+	reg.RegisterClient(availableAuth.ID, provider, models)
+	t.Cleanup(func() {
+		reg.UnregisterClient(disconnectedAuth.ID)
+		reg.UnregisterClient(availableAuth.ID)
+	})
+	if _, errRegister := m.Register(context.Background(), disconnectedAuth); errRegister != nil {
+		t.Fatalf("register disconnected auth: %v", errRegister)
+	}
+	if _, errRegister := m.Register(context.Background(), availableAuth); errRegister != nil {
+		t.Fatalf("register available auth: %v", errRegister)
+	}
+
+	resp, errExecute := m.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	if got := string(resp.Payload); got != availableAuth.ID {
+		t.Fatalf("response payload = %q, want %q", got, availableAuth.ID)
+	}
+	if calls := executor.ExecuteCalls(); !slices.Equal(calls, []string{disconnectedAuth.ID, availableAuth.ID}) {
+		t.Fatalf("credential calls = %v, want both credentials", calls)
+	}
+	assertNoCooldown(t, m, disconnectedAuth.ID, model)
+}
+
 type statusBearingError struct {
 	status int
 	msg    string
@@ -304,6 +383,15 @@ type statusBearingError struct {
 
 func (e *statusBearingError) Error() string   { return e.msg }
 func (e *statusBearingError) StatusCode() int { return e.status }
+
+type explicitConnectionLifecycleError struct {
+	status  int
+	message string
+}
+
+func (e *explicitConnectionLifecycleError) Error() string               { return e.message }
+func (e *explicitConnectionLifecycleError) StatusCode() int             { return e.status }
+func (e *explicitConnectionLifecycleError) IsConnectionLifecycle() bool { return true }
 
 type statusBearingCloseError struct {
 	status int

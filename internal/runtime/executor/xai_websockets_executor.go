@@ -985,6 +985,7 @@ func parseXAIWebsocketError(payload []byte) (error, bool) {
 			// Apply normalized status (e.g. 403 bad-credentials -> 401) and any
 			// provider-specific retry hint while preserving websocket headers.
 			statusError.code = xaiError.code
+			statusError.msg = xaiError.msg
 			if xaiError.retryAfter != nil {
 				statusError.retryAfter = xaiError.retryAfter
 			}

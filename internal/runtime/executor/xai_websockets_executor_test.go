@@ -1722,3 +1722,22 @@ func TestXAIWebsocketsExecuteStreamStopsOnBareErrorPayload(t *testing.T) {
 		t.Fatal("timed out waiting for bare upstream error")
 	}
 }
+
+func TestParseXAIWebsocketSparseErrorUsesReadableDownstreamBody(t *testing.T) {
+	payload := []byte(`{"type":"error","status":400,"headers":{"x-request-id":"req-sparse"},"code":"invalid-argument"}`)
+	err, ok := parseXAIWebsocketError(payload)
+	if !ok {
+		t.Fatal("expected xAI websocket error")
+	}
+	parsed := gjson.Parse(err.Error())
+	if got := parsed.Get("error.code").String(); got != "invalid-argument" {
+		t.Fatalf("error.code = %q, want invalid-argument; payload=%s", got, err)
+	}
+	if got := parsed.Get("error.upstream.code").String(); got != "invalid-argument" {
+		t.Fatalf("error.upstream.code = %q, want invalid-argument; payload=%s", got, err)
+	}
+	headerSource, okHeaders := err.(interface{ Headers() http.Header })
+	if !okHeaders || headerSource.Headers().Get("x-request-id") != "req-sparse" {
+		t.Fatalf("websocket headers not preserved: %#v", err)
+	}
+}
