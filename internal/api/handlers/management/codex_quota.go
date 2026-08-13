@@ -138,7 +138,12 @@ func (h *Handler) codexQuotaClient(auth *coreauth.Auth) *http.Client {
 	if h != nil && h.codexQuotaHTTPClient != nil {
 		return h.codexQuotaHTTPClient
 	}
-	return &http.Client{Timeout: codexQuotaUpstreamTimeout, Transport: h.apiCallTransport(auth, "")}
+	return &http.Client{
+		Timeout:   codexQuotaUpstreamTimeout,
+		Transport: h.apiCallTransport(auth, ""),
+		// 官方 quota 目标固定；拒绝跟随任何重定向，避免 Authorization 被带到非预期主机。
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 func setCodexQuotaHeaders(header http.Header, accessToken, accountID string) {

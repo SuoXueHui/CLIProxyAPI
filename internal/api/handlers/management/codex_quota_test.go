@@ -121,6 +121,31 @@ func TestCodexQuotaUsageUsesFixedRequestSurface(t *testing.T) {
 	}
 }
 
+func TestCodexQuotaUsageRefusesRedirects(t *testing.T) {
+	targetReached := false
+	target := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetReached = true
+	}))
+	defer target.Close()
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Redirect(w, &http.Request{}, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	auth, manager := newCodexQuotaTestAuth(t, map[string]any{"access_token": "access-secret", "account_id": "acct-1"})
+	client := redirector.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	h := &Handler{authManager: manager, codexQuotaUsageURL: redirector.URL + "/backend-api/wham/usage", codexQuotaHTTPClient: client}
+	router := gin.New()
+	router.GET("/", h.GetCodexQuotaUsage)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?auth_index="+auth.EnsureIndex(), nil)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway || targetReached {
+		t.Fatalf("status=%d targetReached=%v body=%s", rec.Code, targetReached, rec.Body.String())
+	}
+}
+
 func TestCodexQuotaUsageErrorsDoNotLeakSecretsOrRawBody(t *testing.T) {
 	secretToken := "access-token-must-not-leak"
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
