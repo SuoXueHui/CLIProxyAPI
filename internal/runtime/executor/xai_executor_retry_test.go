@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -71,6 +73,10 @@ func TestXAIExecutorExecuteStopsAfterOneIncompleteNonStreamRetry(t *testing.T) {
 	if !ok || status.StatusCode() != http.StatusRequestTimeout {
 		t.Fatalf("Execute() error = %#v, want status 408", err)
 	}
+	var lifecycle interface{ IsConnectionLifecycle() bool }
+	if !errors.As(err, &lifecycle) || lifecycle == nil || !lifecycle.IsConnectionLifecycle() {
+		t.Fatalf("Execute() error = %#v, want connection lifecycle marker", err)
+	}
 	if attempts != 2 {
 		t.Fatalf("upstream attempts = %d, want 2", attempts)
 	}
@@ -104,6 +110,48 @@ func TestXAIExecutorExecuteRetriesNonStreamBodyReadFailureOnce(t *testing.T) {
 	_, err := executeXAINonStreamRetryTest(t, server.URL)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("upstream attempts = %d, want 2", attempts)
+	}
+}
+
+func TestXAIExecutorExecuteFinalNonStreamBodyReadFailureIsConnectionLifecycle(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("response writer does not support hijacking")
+			return
+		}
+		conn, _, errHijack := hijacker.Hijack()
+		if errHijack != nil {
+			t.Errorf("hijack connection: %v", errHijack)
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1024\r\nConnection: close\r\n\r\ndata: {\"type\":\"response.created\"}\n\n"))
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	_, err := executeXAINonStreamRetryTest(t, server.URL)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want body disconnect error")
+	}
+	status, ok := err.(interface{ StatusCode() int })
+	if !ok || status.StatusCode() != http.StatusRequestTimeout {
+		t.Fatalf("Execute() error = %#v, want status 408", err)
+	}
+	if err.Error() != xaiIncompleteStreamMessage {
+		t.Fatalf("Execute() error = %q, want %q", err.Error(), xaiIncompleteStreamMessage)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("Execute() error = %#v, want wrapped unexpected EOF", err)
+	}
+	var lifecycle interface{ IsConnectionLifecycle() bool }
+	if !errors.As(err, &lifecycle) || lifecycle == nil || !lifecycle.IsConnectionLifecycle() {
+		t.Fatalf("Execute() error = %#v, want connection lifecycle marker", err)
 	}
 	if attempts != 2 {
 		t.Fatalf("upstream attempts = %d, want 2", attempts)

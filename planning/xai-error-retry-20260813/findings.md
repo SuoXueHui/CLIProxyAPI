@@ -1,0 +1,17 @@
+# Findings
+
+- User screenshot shows repeated `grok-4.6` requests with immediate `503 auth_unavailable` and one non-stream request ending after about 10 seconds with synthetic `408 xai stream ...`.
+- The prior non-stream retry is present on production master, so the task is to identify a path or terminal condition it does not cover rather than re-add the same loop.
+- Production config uses `request-retry: 1` and `max-retry-interval: 3`; the executor already performs one internal replay, but the final synthetic 408 was classified as a normal transient HTTP error and cooled the selected model credential.
+- Live logs show xAI session-affinity entries being reselected because the bound auth became unavailable, confirming the failure can cascade through the auth pool.
+- Standard xAI JSON errors already pass through unchanged. The management visibility gap is specific to sparse bodies such as `{"type":"error","code":"invalid-argument"}` that contain no readable message.
+- Production is currently running `cli-proxy-api:master-v7.2.130-97c3f8a0`; the container is healthy with zero restarts and includes the previous one-retry implementation.
+- Production retry settings are `request-retry: 1`, `max-retry-credentials: 2`, and `max-retry-interval: 3`.
+- Request `90fca032` selected one xAI credential, then reselected a second credential after the first terminal 408, and still returned 408 after about 8.5 seconds. This proves the prior executor retry and credential fallback both ran; the uncovered issue is the terminal classification and pool cooling, not a missing retry loop.
+- Requests `332451ec` and `40436975` later selected the same remaining xAI credential and returned 408 after about 3 seconds without another credential selection, consistent with the other model credentials already being unavailable/cooling.
+- The minimal fix should not promise that an upstream disconnect can never surface: a final 408 remains correct if every permitted credential exhausts its internal attempt. The fix prevents that transport failure from poisoning credential availability and causing the much larger 503 cascade.
+- Review found a second terminal disconnect shape: a final `io.ReadAll` truncation returned raw `unexpected EOF` after its internal retry. It avoided cooldown through existing EOF classification, but did not preserve the same downstream 408 or explicit lifecycle contract. Added a failing regression test and normalized final 2xx body truncations into the typed xAI incomplete-stream error while retaining the original cause through `Unwrap`.
+
+- Final review found two compatibility gaps in the first sparse-error implementation: generic sparse 401/403/408/404 errors were incorrectly labeled `invalid_request_error`, and the `type:error + status` WebSocket path copied only normalized status/retry metadata while discarding the normalized message body.
+- The final implementation maps sparse wrapper types by HTTP semantics (`authentication_error`, `permission_error`, `rate_limit_error`, `invalid_request_error` only for request-fault statuses, otherwise `server_error`) and copies the normalized body back into WebSocket status errors while preserving headers and retry hints.
+- Added regression coverage proving sparse 401/408 do not become request faults, sparse 5xx uses `server_error`, non-JSON bodies remain byte-for-byte unchanged, sparse WebSocket errors retain `error.code`, full `error.upstream`, and response headers, and final body truncation preserves 408 plus wrapped `io.ErrUnexpectedEOF`.

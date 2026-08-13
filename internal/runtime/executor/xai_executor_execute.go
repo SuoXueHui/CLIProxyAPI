@@ -21,6 +21,31 @@ import (
 // Retry a truncated collected SSE response once before surfacing the disconnect.
 const xaiNonStreamDisconnectRetries = 1
 
+const xaiIncompleteStreamMessage = "xai stream error: stream disconnected before response.completed"
+
+// xaiIncompleteStreamError preserves the downstream 408 while telling the auth
+// manager that a missing terminal SSE event is transport lifecycle noise, not a
+// credential fault. This still permits fallback to another credential.
+type xaiIncompleteStreamError struct {
+	statusErr
+	cause error
+}
+
+func newXAIIncompleteStreamError() xaiIncompleteStreamError {
+	return newXAIIncompleteStreamErrorWithCause(nil)
+}
+
+func newXAIIncompleteStreamErrorWithCause(cause error) xaiIncompleteStreamError {
+	return xaiIncompleteStreamError{statusErr: statusErr{
+		code: http.StatusRequestTimeout,
+		msg:  xaiIncompleteStreamMessage,
+	}, cause: cause}
+}
+
+func (xaiIncompleteStreamError) IsConnectionLifecycle() bool { return true }
+
+func (e xaiIncompleteStreamError) Unwrap() error { return e.cause }
+
 func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
@@ -78,6 +103,9 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 				helps.LogWithRequestID(ctx).Debugf("xai executor: non-stream response body disconnected, retrying once: %v", errRead)
 				continue
 			}
+			if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 && ctx.Err() == nil {
+				return resp, newXAIIncompleteStreamErrorWithCause(errRead)
+			}
 			return resp, errRead
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
@@ -115,7 +143,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 			}
 		}
 
-		disconnectErr := statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
+		disconnectErr := newXAIIncompleteStreamError()
 		helps.RecordAPIResponseError(ctx, e.cfg, disconnectErr)
 		if attempt < xaiNonStreamDisconnectRetries && ctx.Err() == nil {
 			helps.LogWithRequestID(ctx).Debug("xai executor: non-stream response ended before response.completed, retrying once")
@@ -124,7 +152,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		return resp, disconnectErr
 	}
 
-	return resp, statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
+	return resp, newXAIIncompleteStreamError()
 }
 
 func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {

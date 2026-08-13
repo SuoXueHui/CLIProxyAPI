@@ -865,7 +865,7 @@ const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
 //
 // Generic 429s stay without an explicit retry hint so conductor backoff still applies.
 func xaiStatusErr(code int, body []byte) statusErr {
-	err := statusErr{code: code, msg: string(body)}
+	err := statusErr{code: code, msg: xaiErrorBodyForDownstream(code, body)}
 	if len(body) == 0 {
 		return err
 	}
@@ -890,6 +890,61 @@ func xaiStatusErr(code int, body []byte) statusErr {
 		err.retryAfter = &d
 	}
 	return err
+}
+
+// xaiErrorBodyForDownstream preserves standard upstream error payloads verbatim.
+// Sparse CLI chat-proxy payloads such as {"type":"error","code":"..."}
+// otherwise have no human-readable message in OpenAI-compatible management UIs,
+// so wrap only that shape and retain the complete original JSON under upstream.
+func xaiErrorBodyForDownstream(code int, body []byte) string {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || !json.Valid(trimmed) {
+		return string(body)
+	}
+	for _, path := range []string{"message", "error.message", "response.error.message"} {
+		if strings.TrimSpace(gjson.GetBytes(trimmed, path).String()) != "" {
+			return string(body)
+		}
+	}
+	rootError := gjson.GetBytes(trimmed, "error")
+	if rootError.Type == gjson.String && strings.TrimSpace(rootError.String()) != "" {
+		return string(body)
+	}
+
+	codeText := strings.TrimSpace(gjson.GetBytes(trimmed, "error.code").String())
+	if codeText == "" {
+		codeText = strings.TrimSpace(gjson.GetBytes(trimmed, "code").String())
+	}
+	if codeText == "" {
+		return string(body)
+	}
+
+	upstreamType := strings.TrimSpace(gjson.GetBytes(trimmed, "error.type").String())
+	if upstreamType == "" {
+		upstreamType = strings.TrimSpace(gjson.GetBytes(trimmed, "type").String())
+	}
+	errType := upstreamType
+	if errType == "" || strings.EqualFold(errType, "error") {
+		switch code {
+		case http.StatusBadRequest, http.StatusConflict, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+			errType = "invalid_request_error"
+		case http.StatusUnauthorized:
+			errType = "authentication_error"
+		case http.StatusForbidden:
+			errType = "permission_error"
+		case http.StatusTooManyRequests:
+			errType = "rate_limit_error"
+		default:
+			errType = "server_error"
+		}
+	}
+
+	payload := []byte(`{"error":{}}`)
+	payload, _ = sjson.SetBytes(payload, "error.message", string(trimmed))
+	payload, _ = sjson.SetBytes(payload, "error.type", errType)
+	payload, _ = sjson.SetBytes(payload, "error.code", codeText)
+	payload, _ = sjson.SetRawBytes(payload, "error.upstream", trimmed)
+	return string(payload)
 }
 
 // isXAIBadCredentialsBody reports whether an xAI error body indicates an

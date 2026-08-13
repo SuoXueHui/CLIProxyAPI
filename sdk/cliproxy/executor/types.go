@@ -213,3 +213,11 @@ type RequestScopedError interface {
 	error
 	IsRequestScoped() bool
 }
+
+// ConnectionLifecycleError identifies an upstream transport/session failure.
+// Auth managers may try another credential but must not cool the credential that
+// happened to observe the disconnect.
+type ConnectionLifecycleError interface {
+	error
+	IsConnectionLifecycle() bool
+}
