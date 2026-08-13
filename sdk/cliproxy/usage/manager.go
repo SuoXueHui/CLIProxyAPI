@@ -224,6 +224,7 @@ type Manager struct {
 	once     sync.Once
 	stopOnce sync.Once
 	cancel   context.CancelFunc
+	done     chan struct{}
 
 	mu     sync.Mutex
 	cond   *sync.Cond
@@ -237,7 +238,7 @@ type Manager struct {
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
+	m := &Manager{done: make(chan struct{})}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -253,7 +254,10 @@ func (m *Manager) Start(ctx context.Context) {
 		}
 		var workerCtx context.Context
 		workerCtx, m.cancel = context.WithCancel(ctx)
-		go m.run(workerCtx)
+		go func() {
+			defer close(m.done)
+			m.run(workerCtx)
+		}()
 	})
 }
 
@@ -262,6 +266,7 @@ func (m *Manager) Stop() {
 	if m == nil {
 		return
 	}
+	m.Start(context.Background())
 	m.stopOnce.Do(func() {
 		if m.cancel != nil {
 			m.cancel()
@@ -271,6 +276,7 @@ func (m *Manager) Stop() {
 		m.mu.Unlock()
 		m.cond.Broadcast()
 	})
+	<-m.done
 }
 
 // Register appends a plugin to the delivery list.

@@ -3,7 +3,18 @@ package usage
 import (
 	"context"
 	"testing"
+	"time"
 )
+
+type blockingTestPlugin struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingTestPlugin) HandleUsage(context.Context, Record) {
+	close(p.started)
+	<-p.release
+}
 
 func TestGenerateEnabledDefaultsNilToTrue(t *testing.T) {
 	if !GenerateEnabled(nil) {
@@ -48,5 +59,34 @@ func TestRecordOmittedGenerateIsEnabled(t *testing.T) {
 	}
 	if !GenerateEnabled(record.Generate) {
 		t.Fatalf("GenerateEnabled(omitted) = false, want true")
+	}
+}
+
+func TestManagerStopWaitsForQueuedPluginsToDrain(t *testing.T) {
+	manager := NewManager(1)
+	plugin := &blockingTestPlugin{started: make(chan struct{}), release: make(chan struct{})}
+	manager.Register(plugin)
+	manager.Publish(context.Background(), Record{Provider: "codex", Model: "gpt-test"})
+	select {
+	case <-plugin.started:
+	case <-time.After(time.Second):
+		t.Fatal("usage plugin did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		manager.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop() returned before queued plugin work completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(plugin.release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop() did not return after queued plugin work completed")
 	}
 }

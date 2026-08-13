@@ -10,3 +10,5 @@
 - The legacy pop API intentionally remains destructive by internally claim-and-acking the selected durable records.
 - Control frames (`support_refresh` and `refresh`) only use subscriber delivery and are excluded from the outbox.
 - The claim/ack HTTP contract uses `lease_id`, stable `delivery_id`, and nested raw `payload` JSON.
+- Usage records first pass through the asynchronous SDK usage manager. Its old Stop method returned before the dispatcher finished, so normal SIGTERM/container replacement could still terminate the process before the last records reached SQLite.
+- The usage manager now keeps request-time publication asynchronous but blocks Stop until queued plugin calls complete, closing the normal rolling-restart tail-loss window without adding SQLite latency to model requests.

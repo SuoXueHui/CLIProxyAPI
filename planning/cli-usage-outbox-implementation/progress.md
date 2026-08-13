@@ -14,3 +14,5 @@
 - 2026-08-13: Review found expired leases could be counted repeatedly during partial retry batches. Added a failing regression test, then atomically released expired leases before re-claim; focused tests passed.
 - 2026-08-13: Review found a failed hot-reload path could close a working outbox. Added regression coverage and kept the existing durable backend active when the new target cannot be opened.
 - 2026-08-13: A later fresh `go test ./...` hit an unrelated pre-existing flaky panic in `sdk/cliproxy.TestServiceInitialOverlayStagesPluginWritesUntilReady` (`close of closed channel`); the usage-outbox focused suites remained green. A prior full repository run completed successfully.
+- 2026-08-13: Cross-component audit found the SDK usage dispatcher did not wait for queued plugin work during Stop, leaving a normal container-restart loss window ahead of the durable outbox.
+- 2026-08-13: Added a failing shutdown-drain regression test, then made Stop wait for the dispatcher to finish queued plugin calls while preserving asynchronous request publication.
