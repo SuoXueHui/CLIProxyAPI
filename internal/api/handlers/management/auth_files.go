@@ -1,6 +1,7 @@
 package management
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -387,6 +388,10 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
 	}
+	if planType, source := extractXAIPlanEvidence(auth); planType != "" {
+		entry["xai_plan_type"] = planType
+		entry["xai_plan_source"] = source
+	}
 	// Expose priority from Attributes (set by synthesizer from JSON "priority" field).
 	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).
 	if p := strings.TrimSpace(authAttribute(auth, "priority")); p != "" {
@@ -534,6 +539,89 @@ func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
 		return nil
 	}
 	return result
+}
+
+// extractXAIPlanEvidence exposes only normalized plan evidence already present
+// in memory. Explicit metadata wins over JWT claims because it can originate
+// from a more direct subscription observation.
+func extractXAIPlanEvidence(auth *coreauth.Auth) (planType string, source string) {
+	if auth == nil || auth.Metadata == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "xai") {
+		return "", ""
+	}
+	for _, key := range []string{"xai_plan_type", "subscription_tier", "plan_type"} {
+		if planType = normalizeXAIPlanType(auth.Metadata[key]); planType != "" {
+			return planType, "explicit_metadata"
+		}
+	}
+	accessToken, _ := auth.Metadata["access_token"].(string)
+	if planType = xaiPlanTypeFromAccessToken(accessToken); planType != "" {
+		return planType, "access_token_tier"
+	}
+	return "", ""
+}
+
+func normalizeXAIPlanType(raw any) string {
+	value, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("-", "_", " ", "_").Replace(value)
+	for strings.Contains(value, "__") {
+		value = strings.ReplaceAll(value, "__", "_")
+	}
+	switch value {
+	case "free", "free_tier", "grok_free", "grok_basic":
+		return "free"
+	case "supergrok":
+		return "supergrok"
+	case "supergrok_heavy", "supergrokheavy":
+		return "supergrok_heavy"
+	default:
+		return ""
+	}
+}
+
+func xaiPlanTypeFromAccessToken(token string) string {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 || parts[1] == "" {
+		return ""
+	}
+	payload, errDecode := base64.RawURLEncoding.DecodeString(parts[1])
+	if errDecode != nil {
+		return ""
+	}
+	var claims struct {
+		Tier json.RawMessage `json:"tier"`
+	}
+	if errUnmarshal := json.Unmarshal(payload, &claims); errUnmarshal != nil || len(claims.Tier) == 0 {
+		return ""
+	}
+	var tierNumber uint64
+	if errNumber := json.Unmarshal(claims.Tier, &tierNumber); errNumber == nil {
+		return mapXAITierNumber(strconv.FormatUint(tierNumber, 10))
+	}
+	var tierString string
+	if errString := json.Unmarshal(claims.Tier, &tierString); errString == nil {
+		if planType := mapXAITierNumber(strings.TrimSpace(tierString)); planType != "" {
+			return planType
+		}
+		return normalizeXAIPlanType(tierString)
+	}
+	return ""
+}
+
+func mapXAITierNumber(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "0":
+		return "free"
+	case "1":
+		return "supergrok"
+	case "5":
+		return "supergrok_heavy"
+	default:
+		return ""
+	}
 }
 
 func authEmail(auth *coreauth.Auth) string {
