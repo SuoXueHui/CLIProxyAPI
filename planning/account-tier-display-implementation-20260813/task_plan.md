@@ -13,12 +13,12 @@
 ## 阶段
 
 1. [completed] 复核现场根因、仓库边界与用户批准的实现方向。
-2. [in_progress] 完成 CLIProxyAPI xAI 套餐证据接口与回归测试。
-3. [in_progress] 完成 CPA Manager Plus 独立套餐 badge 与前端测试。
-4. [pending] 交叉 review、全量验证并提交两个功能分支。
-5. [pending] 合并到各 fork `master`，推送远端并生成可回滚发布产物。
-6. [pending] 只读核对生产后备份、灰度/切换服务端与 Manager，验证页面和 API。
-7. [pending] 更新 planning、AGENTS baseline（如插件基线变化）与 Obsidian 变更记录。
+2. [completed] 完成 CLIProxyAPI xAI 套餐证据接口与回归测试。
+3. [completed] 完成 CPA Manager Plus 独立套餐 badge 与前端测试。
+4. [completed] 交叉 review、全量验证并提交两个功能分支。
+5. [completed] 合并到各 fork `master`，推送远端并生成可回滚发布产物。
+6. [completed] 只读核对生产后备份、灰度/切换服务端与 Manager，验证页面和 API。
+7. [completed] 更新 planning、AGENTS baseline（如插件基线变化）与 Obsidian 变更记录。
 
 ## 风险与边界
 
