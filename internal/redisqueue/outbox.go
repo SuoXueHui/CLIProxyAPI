@@ -51,7 +51,7 @@ type durableOutbox struct {
 }
 
 type outboxRuntime struct {
-	mu       sync.RWMutex
+	mu       sync.Mutex
 	durable  *durableOutbox
 	path     string
 	mode     string
@@ -375,23 +375,13 @@ func ConfigureOutbox(path string) error {
 		}
 		return nil
 	}
-	runtimeOutbox.mu.RLock()
-	if runtimeOutbox.durable != nil && runtimeOutbox.mode == "durable" && runtimeOutbox.healthy && runtimeOutbox.path == path {
-		runtimeOutbox.mu.RUnlock()
-		return nil
-	}
-	runtimeOutbox.mu.RUnlock()
-
-	durable, errOpen := openOutbox(path, time.Now)
 	runtimeOutbox.mu.Lock()
-	old := runtimeOutbox.durable
-	if errOpen == nil && old != nil && runtimeOutbox.mode == "durable" && runtimeOutbox.path == path {
-		runtimeOutbox.healthy = true
-		runtimeOutbox.lastErr = nil
+	if runtimeOutbox.durable != nil && runtimeOutbox.mode == "durable" && runtimeOutbox.healthy && runtimeOutbox.path == path {
 		runtimeOutbox.mu.Unlock()
-		_ = durable.close()
 		return nil
 	}
+	durable, errOpen := openOutbox(path, time.Now)
+	old := runtimeOutbox.durable
 	if errOpen != nil {
 		if old == nil {
 			runtimeOutbox.durable = nil
@@ -444,13 +434,13 @@ func EnqueueWithError(payload []byte) error {
 		global.publishToSubscribers(payload)
 		return nil
 	}
-	runtimeOutbox.mu.RLock()
+	runtimeOutbox.mu.Lock()
 	durable := runtimeOutbox.durable
 	mode := runtimeOutbox.mode
 	lastErr := runtimeOutbox.lastErr
-	runtimeOutbox.mu.RUnlock()
 	if mode == "durable" {
 		if durable == nil {
+			runtimeOutbox.mu.Unlock()
 			runtimeOutbox.dropped.Add(1)
 			if lastErr != nil {
 				return fmt.Errorf("persist usage record: %w", lastErr)
@@ -458,6 +448,7 @@ func EnqueueWithError(payload []byte) error {
 			return errOutboxUnavailable
 		}
 		if _, errEnqueue := durable.enqueue(payload); errEnqueue != nil {
+			runtimeOutbox.mu.Unlock()
 			runtimeOutbox.dropped.Add(1)
 			runtimeOutbox.mu.Lock()
 			runtimeOutbox.healthy = false
@@ -465,7 +456,9 @@ func EnqueueWithError(payload []byte) error {
 			runtimeOutbox.mu.Unlock()
 			return errEnqueue
 		}
+		runtimeOutbox.mu.Unlock()
 	} else {
+		runtimeOutbox.mu.Unlock()
 		global.enqueue(payload)
 		runtimeOutbox.produced.Add(1)
 	}
@@ -475,50 +468,56 @@ func EnqueueWithError(payload []byte) error {
 
 // Claim leases durable usage records without removing them.
 func Claim(count int, lease time.Duration) (ClaimResult, error) {
-	runtimeOutbox.mu.RLock()
+	runtimeOutbox.mu.Lock()
 	durable := runtimeOutbox.durable
 	mode := runtimeOutbox.mode
-	runtimeOutbox.mu.RUnlock()
 	if mode != "durable" {
+		runtimeOutbox.mu.Unlock()
 		return ClaimResult{}, errors.New("usage outbox claim requires durable mode")
 	}
 	if durable == nil {
+		runtimeOutbox.mu.Unlock()
 		return ClaimResult{}, errOutboxUnavailable
 	}
-	return durable.claim(count, lease)
+	result, errClaim := durable.claim(count, lease)
+	runtimeOutbox.mu.Unlock()
+	return result, errClaim
 }
 
 // Ack removes only records leased by the supplied token and is safe to repeat.
 func Ack(leaseToken string, deliveryIDs []string) (int64, error) {
-	runtimeOutbox.mu.RLock()
+	runtimeOutbox.mu.Lock()
 	durable := runtimeOutbox.durable
 	mode := runtimeOutbox.mode
-	runtimeOutbox.mu.RUnlock()
 	if mode != "durable" {
+		runtimeOutbox.mu.Unlock()
 		return 0, errors.New("usage outbox ack requires durable mode")
 	}
 	if durable == nil {
+		runtimeOutbox.mu.Unlock()
 		return 0, errOutboxUnavailable
 	}
-	return durable.ack(leaseToken, deliveryIDs)
+	acked, errAck := durable.ack(leaseToken, deliveryIDs)
+	runtimeOutbox.mu.Unlock()
+	return acked, errAck
 }
 
 // Status returns queue counters and health without payload contents or file paths.
 func Status() QueueStatus {
-	runtimeOutbox.mu.RLock()
+	runtimeOutbox.mu.Lock()
 	durable := runtimeOutbox.durable
 	mode := runtimeOutbox.mode
 	healthy := runtimeOutbox.healthy
-	runtimeOutbox.mu.RUnlock()
 	if mode == "durable" && durable != nil {
 		status, errStats := durable.stats()
 		if errStats == nil {
 			status.Dropped = runtimeOutbox.dropped.Load()
+			runtimeOutbox.mu.Unlock()
 			return status
 		}
 		healthy = false
 	}
-	return QueueStatus{
+	status := QueueStatus{
 		Mode:     mode,
 		Healthy:  healthy,
 		Pending:  int64(global.len()),
@@ -526,34 +525,36 @@ func Status() QueueStatus {
 		Acked:    runtimeOutbox.acked.Load(),
 		Dropped:  runtimeOutbox.dropped.Load(),
 	}
+	runtimeOutbox.mu.Unlock()
+	return status
 }
 
 func popDurableOldest(count int) ([][]byte, bool, error) {
-	runtimeOutbox.mu.RLock()
+	runtimeOutbox.mu.Lock()
 	durable := runtimeOutbox.durable
 	mode := runtimeOutbox.mode
-	runtimeOutbox.mu.RUnlock()
 	if mode != "durable" {
+		runtimeOutbox.mu.Unlock()
 		return nil, false, nil
 	}
 	if durable == nil {
+		runtimeOutbox.mu.Unlock()
 		return nil, true, errOutboxUnavailable
 	}
-	return func() ([][]byte, bool, error) {
-		items, errPop := durable.popOldest(count)
-		return items, true, errPop
-	}()
+	items, errPop := durable.popOldest(count)
+	runtimeOutbox.mu.Unlock()
+	return items, true, errPop
 }
 
 func durableModeConfigured() bool {
-	runtimeOutbox.mu.RLock()
-	defer runtimeOutbox.mu.RUnlock()
+	runtimeOutbox.mu.Lock()
+	defer runtimeOutbox.mu.Unlock()
 	return runtimeOutbox.mode == "durable"
 }
 
 func snapshotGlobalOutboxForTest() outboxTestSnapshot {
-	runtimeOutbox.mu.RLock()
-	defer runtimeOutbox.mu.RUnlock()
+	runtimeOutbox.mu.Lock()
+	defer runtimeOutbox.mu.Unlock()
 	return outboxTestSnapshot{
 		durable: runtimeOutbox.durable, path: runtimeOutbox.path, mode: runtimeOutbox.mode, healthy: runtimeOutbox.healthy, lastErr: runtimeOutbox.lastErr,
 		dropped: runtimeOutbox.dropped.Load(), produced: runtimeOutbox.produced.Load(), acked: runtimeOutbox.acked.Load(),
