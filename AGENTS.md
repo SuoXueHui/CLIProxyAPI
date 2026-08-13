@@ -22,6 +22,13 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Auth material defaults under `auths/`
 - Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
 
+## Production CPA Plugin Baseline
+- Production uses the author's unmodified `Mxucc/cpa-account-config-manager` release artifacts; the previous custom fork line is retired.
+- Current production baseline: upstream release `v0.3.1332` for Linux amd64.
+- Before deployment, verify the release archive against the author's published checksum and keep the active plugin binary plus its SHA256 in the rollback snapshot.
+- After deployment, verify the loaded and registered plugin version, active plugin path, management UI availability, and the production container health checks.
+- Future plugin upgrades should follow the author's upstream releases unless a later project decision explicitly restores a maintained custom fork.
+
 ## Architecture
 - `cmd/server/` — Server entrypoint
 - `internal/api/` — Gin HTTP API (routes, middleware, modules)
