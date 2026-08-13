@@ -10,3 +10,4 @@
 - Read-only live reconciliation showed the durable outbox draining to `produced=19336`, `acked=19336`, `pending=0`, `inflight=0`; Manager status reported matching `totalClaimed=523`, `totalCommitted=523`, `totalAckFailures=0`, `deadLetters=0` since its latest restart.
 - Observed a concurrent authorized deployment of the current Manager/controller master images and waited for both containers to become healthy before continuing.
 - Fast-forwarded the release worktree to current CLIProxyAPI fork `master@66e2f6bc`; monitoring commits remain ancestors.
+- Merged release verification commit `6f85a9a8` into local/fork `master` and pushed it.

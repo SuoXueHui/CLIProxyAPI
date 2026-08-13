@@ -19,8 +19,8 @@ Validate the already implemented durable request-monitoring delivery repair, int
 - [completed] 2. Re-review branch/master topology and run fresh repository verification.
 - [completed] 3. Prepare production artifacts and read-only live baseline.
 - [completed] 4. Deploy CLIProxyAPI and CPA Manager with rollback snapshots.
-- [in_progress] 5. Run synthetic/end-to-end reconciliation and observe health.
-- [pending] 6. Update project knowledge and publish final evidence.
+- [completed] 5. Run synthetic/end-to-end reconciliation and observe health.
+- [completed] 6. Update project knowledge and publish final evidence.
 
 ## Errors
 
