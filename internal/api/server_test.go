@@ -1414,6 +1414,29 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	}
 }
 
+func TestManagementUsageClaimAckRoutesRequireAuth(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+
+	for _, path := range []string{"/v0/management/usage-queue/claim", "/v0/management/usage-queue/ack"} {
+		missingReq := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		missingReq.Header.Set("Content-Type", "application/json")
+		missingRR := httptest.NewRecorder()
+		server.engine.ServeHTTP(missingRR, missingReq)
+		if missingRR.Code != http.StatusUnauthorized {
+			t.Fatalf("%s missing auth status = %d, want 401 body=%s", path, missingRR.Code, missingRR.Body.String())
+		}
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue/status", nil)
+	statusReq.Header.Set("Authorization", "Bearer test-management-key")
+	statusRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(statusRR, statusReq)
+	if statusRR.Code != http.StatusOK {
+		t.Fatalf("status route = %d, want 200 body=%s", statusRR.Code, statusRR.Body.String())
+	}
+}
+
 func TestManagementPluginsRouteRegistered(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

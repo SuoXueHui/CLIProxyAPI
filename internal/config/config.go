@@ -62,6 +62,10 @@ type Config struct {
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
+	// UsageOutboxPath selects durable usage delivery storage. Empty defaults beside the config file.
+	// The literal "disabled" keeps the legacy in-memory queue for compatibility.
+	UsageOutboxPath string `yaml:"usage-outbox-path" json:"usage-outbox-path"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
