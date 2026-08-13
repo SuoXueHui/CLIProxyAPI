@@ -13,3 +13,6 @@
 - 线上安全汇总：Codex `free=25/team=203`，xAI `supergrok_heavy=3`；另外 2 个 xAI 因缺少 tier 证据保持未知。
 - 回滚目录为 `/data/apps/cli-proxy-api/releases/account-tier-final-20260813T105214Z/`；旧镜像与 Compose 前置快照保留。
 - 已检查并更新 CLIProxyAPI 与 CPA Manager Plus Obsidian `08-变更记录.md`；现有同步规则可用，无需创建新知识目录。
+- 线上发布后，另一项已批准的 usage-window 任务把 Manager 生产推进到 `0b3fa181` 系列。确认该链路以 `7cf0686a` 为祖先，套餐 badge 仍在线。
+- 为避免维护 fork `master` 落后于生产批准改动，已将 `02137eaf` 套餐 bundle 分支与 `5300c66e` usage-window 最终 bundle 合并为 `2cf66b31`，重新构建内嵌页面并推送 fork `master`。
+- 合并后定向 3 文件/15 项测试、type-check、lint 和 production build 通过；线上当前 usage-window 镜像包含 `data-account-plan`，浏览器验证 xAI Heavy 3 个、Codex Free/Team badge 均可见。
