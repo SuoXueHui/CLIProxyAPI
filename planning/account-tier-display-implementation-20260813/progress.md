@@ -16,3 +16,6 @@
 - 线上发布后，另一项已批准的 usage-window 任务把 Manager 生产推进到 `0b3fa181` 系列。确认该链路以 `7cf0686a` 为祖先，套餐 badge 仍在线。
 - 为避免维护 fork `master` 落后于生产批准改动，已将 `02137eaf` 套餐 bundle 分支与 `5300c66e` usage-window 最终 bundle 合并为 `2cf66b31`，重新构建内嵌页面并推送 fork `master`。
 - 合并后定向 3 文件/15 项测试、type-check、lint 和 production build 通过；线上当前 usage-window 镜像包含 `data-account-plan`，浏览器验证 xAI Heavy 3 个、Codex Free/Team badge 均可见。
+- 收尾时发现 Manager 镜像被并发任务回切为 `usage-window-f69d13d9-amd64`；已备份 compose/inspect 并重新切换到 `usage-window-0b3fa181-amd64`，回滚目录 `/data/apps/cpa-manager-plus/releases/account-tier-reconcile-20260813T113514Z/`。
+- 最终复核：CPA root=200、未认证 models=401、Manager health=200、auth-files=200；两容器 restart=0/OOM=false，Manager healthy，内嵌 bundle 含 `SuperGrok Heavy`，近 5 分钟无 panic/fatal/OOM。
+- 最终安全汇总已刷新为 Codex `free=28/team=196`、xAI `supergrok_heavy=3/unknown=2`。

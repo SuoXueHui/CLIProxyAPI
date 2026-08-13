@@ -9,3 +9,5 @@
 - Codex 线上 228 个认证均已有 `id_token.plan_type`，因此本次 Manager 独立 badge 可全部展示；等级分布为 Free 25、Team 203。
 - Manager 生产随后切换到 `cpa-manager-plus:usage-window-0b3fa181-amd64`；该提交以套餐功能 `7cf0686a` 为祖先并保留套餐 badge，同时增加另一任务的本地窗口时间进度。
 - Manager fork 最终合并 `master=2cf66b31`，同时包含套餐功能、内嵌页面与 usage-window 最终变更；生产镜像仍是其已验证祖先链产物。
+- 最终现场复核发现 Manager 镜像短暂回落到 `usage-window-f69d13d9-amd64`；已使用现成镜像重新切换到 `usage-window-0b3fa181-amd64`，该镜像保留套餐 badge。回滚快照位于 `/data/apps/cpa-manager-plus/releases/account-tier-reconcile-20260813T113514Z/`。
+- 2026-08-13 19:35 实时认证数据为 Codex `free=28/team=196` （共 224）、xAI `supergrok_heavy=3/unknown=2`；认证池会动态变化，历史的 25/203/228 不再作当前基线。
