@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestEnqueueBroadcastsToUsageSubscribersAndSkipsQueue(t *testing.T) {
+func TestEnqueueBroadcastsToUsageSubscribersAndRetainsQueueRecord(t *testing.T) {
 	withEnabledQueue(t, func() {
 		first, unsubscribeFirst := SubscribeUsage()
 		defer unsubscribeFirst()
@@ -20,8 +20,8 @@ func TestEnqueueBroadcastsToUsageSubscribersAndSkipsQueue(t *testing.T) {
 		requireUsageSubscriberPayload(t, first, "usage-record")
 		requireUsageSubscriberPayload(t, second, "usage-record")
 
-		if items := PopOldest(1); len(items) != 0 {
-			t.Fatalf("PopOldest() items = %q, want empty after subscriber broadcast", items)
+		if items := PopOldest(1); len(items) != 1 || string(items[0]) != "usage-record" {
+			t.Fatalf("PopOldest() items = %q, want persisted subscriber record", items)
 		}
 
 		unsubscribeFirst()
@@ -31,6 +31,24 @@ func TestEnqueueBroadcastsToUsageSubscribersAndSkipsQueue(t *testing.T) {
 		items := PopOldest(1)
 		if len(items) != 1 || string(items[0]) != "queued-record" {
 			t.Fatalf("PopOldest() items = %q, want queued record after unsubscribe", items)
+		}
+	})
+}
+
+func TestSlowUsageSubscriberDoesNotLoseQueuedRecords(t *testing.T) {
+	withEnabledQueue(t, func() {
+		subscriber, unsubscribe := SubscribeUsage()
+		defer unsubscribe()
+		requireUsageSubscriberPayload(t, subscriber, usageSupportRefreshPayload)
+
+		const records = usageSubscriberBuffer + 32
+		for i := 0; i < records; i++ {
+			Enqueue([]byte("usage-record"))
+		}
+
+		items := PopOldest(records)
+		if len(items) != records {
+			t.Fatalf("PopOldest() items = %d, want %d despite slow subscriber", len(items), records)
 		}
 	})
 }

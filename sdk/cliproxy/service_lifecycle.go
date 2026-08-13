@@ -50,6 +50,10 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 
 	usage.StartDefault(ctx)
+	outboxPath := redisqueue.ResolveOutboxPath(s.configPath, s.cfg.UsageOutboxPath)
+	if errOutbox := redisqueue.ConfigureOutbox(outboxPath); errOutbox != nil {
+		log.WithError(errOutbox).Error("durable usage outbox is unavailable; usage events will be dropped until storage recovers")
+	}
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)

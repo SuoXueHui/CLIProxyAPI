@@ -116,6 +116,10 @@ type Server struct {
 // Returns:
 //   - *Server: A new server instance
 func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
+	outboxPath := redisqueue.ResolveOutboxPath(configFilePath, cfg.UsageOutboxPath)
+	if errOutbox := redisqueue.ConfigureOutbox(outboxPath); errOutbox != nil {
+		log.WithError(errOutbox).Error("durable usage outbox is unavailable; usage events will be dropped until storage recovers")
+	}
 	optionState := &serverOptionConfig{
 		requestLoggerFactory: defaultRequestLoggerFactory,
 	}

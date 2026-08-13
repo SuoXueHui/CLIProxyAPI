@@ -92,6 +92,13 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
 	}
 
+	if oldCfg == nil || oldCfg.UsageOutboxPath != cfg.UsageOutboxPath {
+		outboxPath := redisqueue.ResolveOutboxPath(s.configFilePath, cfg.UsageOutboxPath)
+		if errOutbox := redisqueue.ConfigureOutbox(outboxPath); errOutbox != nil {
+			log.WithError(errOutbox).Error("failed to apply durable usage outbox configuration")
+		}
+	}
+
 	if s.requestLogger != nil && (oldCfg == nil || oldCfg.ErrorLogsMaxFiles != cfg.ErrorLogsMaxFiles) {
 		if setter, ok := s.requestLogger.(interface{ SetErrorLogsMaxFiles(int) }); ok {
 			setter.SetErrorLogsMaxFiles(cfg.ErrorLogsMaxFiles)

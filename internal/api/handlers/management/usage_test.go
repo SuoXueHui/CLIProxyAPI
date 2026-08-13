@@ -1,10 +1,13 @@
 package management
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
@@ -42,6 +45,69 @@ func TestGetUsageQueuePopsRequestedRecords(t *testing.T) {
 			t.Fatalf("remaining queue = %q, want third item only", remaining)
 		}
 	})
+}
+
+func TestUsageQueueClaimAndAckHTTP(t *testing.T) {
+	if errConfigure := redisqueue.ConfigureOutbox(filepath.Join(t.TempDir(), "usage-outbox.sqlite")); errConfigure != nil {
+		t.Fatalf("ConfigureOutbox() error = %v", errConfigure)
+	}
+	redisqueue.SetEnabled(true)
+	t.Cleanup(func() {
+		redisqueue.SetEnabled(false)
+		_ = redisqueue.ConfigureOutbox("disabled")
+	})
+	redisqueue.Enqueue([]byte(`{"id":1}`))
+	redisqueue.Enqueue([]byte(`{"id":2}`))
+
+	h := &Handler{}
+	claimRec := httptest.NewRecorder()
+	claimCtx, _ := gin.CreateTestContext(claimRec)
+	claimCtx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/usage-queue/claim", bytes.NewBufferString(`{"count":2,"lease_seconds":60}`))
+	claimCtx.Request.Header.Set("Content-Type", "application/json")
+	h.ClaimUsageQueue(claimCtx)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim status = %d, want 200 body=%s", claimRec.Code, claimRec.Body.String())
+	}
+	var claim struct {
+		LeaseID string `json:"lease_id"`
+		Items   []struct {
+			DeliveryID string          `json:"delivery_id"`
+			Payload    json.RawMessage `json:"payload"`
+		} `json:"items"`
+	}
+	if errUnmarshal := json.Unmarshal(claimRec.Body.Bytes(), &claim); errUnmarshal != nil {
+		t.Fatalf("unmarshal claim: %v", errUnmarshal)
+	}
+	if claim.LeaseID == "" || len(claim.Items) != 2 {
+		t.Fatalf("claim response = %+v, want token and two items", claim)
+	}
+	requireRecordID(t, claim.Items[0].Payload, 1)
+
+	ackBody, _ := json.Marshal(map[string]any{
+		"lease_id":     claim.LeaseID,
+		"delivery_ids": []string{claim.Items[0].DeliveryID},
+	})
+	ackRec := httptest.NewRecorder()
+	ackCtx, _ := gin.CreateTestContext(ackRec)
+	ackCtx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/usage-queue/ack", bytes.NewReader(ackBody))
+	ackCtx.Request.Header.Set("Content-Type", "application/json")
+	h.AckUsageQueue(ackCtx)
+	if ackRec.Code != http.StatusOK || !bytes.Contains(ackRec.Body.Bytes(), []byte(`"acked":1`)) {
+		t.Fatalf("ack response status=%d body=%s, want acked=1", ackRec.Code, ackRec.Body.String())
+	}
+
+	statusRec := httptest.NewRecorder()
+	statusCtx, _ := gin.CreateTestContext(statusRec)
+	statusCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage-queue/status", nil)
+	h.GetUsageQueueStatus(statusCtx)
+	if statusRec.Code != http.StatusOK || !bytes.Contains(statusRec.Body.Bytes(), []byte(`"inflight":1`)) {
+		t.Fatalf("status response status=%d body=%s, want one inflight", statusRec.Code, statusRec.Body.String())
+	}
+
+	// Verify the unacked item is not destructively returned before its lease expires.
+	if retry, errRetry := redisqueue.Claim(2, time.Minute); errRetry != nil || len(retry.Items) != 0 {
+		t.Fatalf("immediate retry claim = %+v, err=%v, want empty", retry, errRetry)
+	}
 }
 
 func TestGetUsageQueueInvalidCountDoesNotPop(t *testing.T) {

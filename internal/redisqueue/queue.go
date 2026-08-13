@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -14,6 +16,7 @@ const (
 
 	usageSupportRefreshPayload = `{"support_refresh":true}`
 	usageRefreshPayload        = `{"refresh":true}`
+	outboxErrorLogInterval     = time.Minute
 )
 
 type queueItem struct {
@@ -34,6 +37,7 @@ var (
 	retentionSeconds atomic.Int64
 	global           queue
 	errorGlobal      queue
+	lastOutboxLogNS  atomic.Int64
 )
 
 func init() {
@@ -43,7 +47,11 @@ func init() {
 func SetEnabled(value bool) {
 	enabled.Store(value)
 	if !value {
-		global.clear()
+		if durableModeConfigured() {
+			global.closeSubscribers()
+		} else {
+			global.clear()
+		}
 		errorGlobal.clear()
 	}
 }
@@ -63,16 +71,24 @@ func SetRetentionSeconds(value int) {
 }
 
 func Enqueue(payload []byte) {
-	if !Enabled() {
-		return
+	if errEnqueue := EnqueueWithError(payload); errEnqueue != nil {
+		if shouldLogOutboxError(time.Now()) {
+			log.WithError(errEnqueue).Error("usage record dropped because the durable outbox write failed")
+		}
 	}
-	if len(payload) == 0 {
-		return
+}
+
+func shouldLogOutboxError(now time.Time) bool {
+	nowNS := now.UnixNano()
+	for {
+		previous := lastOutboxLogNS.Load()
+		if previous > 0 && nowNS-previous < int64(outboxErrorLogInterval) {
+			return false
+		}
+		if lastOutboxLogNS.CompareAndSwap(previous, nowNS) {
+			return true
+		}
 	}
-	if global.publishToSubscribers(payload) {
-		return
-	}
-	global.enqueue(payload)
 }
 
 func EnqueueError(payload []byte) {
@@ -92,7 +108,19 @@ func PopOldest(count int) [][]byte {
 	if count <= 0 {
 		return nil
 	}
-	return global.popOldest(count)
+	items, durable, errPop := popDurableOldest(count)
+	if durable {
+		if errPop != nil {
+			log.WithError(errPop).Error("failed to pop usage records from the durable outbox")
+			return nil
+		}
+		return items
+	}
+	items = global.popOldest(count)
+	if len(items) > 0 {
+		runtimeOutbox.acked.Add(int64(len(items)))
+	}
+	return items
 }
 
 func SubscribeUsage() (<-chan []byte, func()) {
@@ -119,6 +147,19 @@ func (q *queue) clear() {
 	q.subscribers = nil
 	q.mu.Unlock()
 
+	for _, subscriber := range subscribers {
+		close(subscriber)
+	}
+}
+
+func (q *queue) closeSubscribers() {
+	q.mu.Lock()
+	subscribers := make([]chan []byte, 0, len(q.subscribers))
+	for _, subscriber := range q.subscribers {
+		subscribers = append(subscribers, subscriber)
+	}
+	q.subscribers = nil
+	q.mu.Unlock()
 	for _, subscriber := range subscribers {
 		close(subscriber)
 	}
@@ -254,4 +295,11 @@ func (q *queue) maybeCompactLocked() {
 	}
 	q.items = append([]queueItem(nil), q.items[q.head:]...)
 	q.head = 0
+}
+
+func (q *queue) len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.pruneLocked(time.Now())
+	return len(q.items) - q.head
 }

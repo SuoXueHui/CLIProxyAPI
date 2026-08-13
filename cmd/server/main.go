@@ -561,6 +561,10 @@ func main() {
 	}
 	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
+	outboxPath := redisqueue.ResolveOutboxPath(configFilePath, cfg.UsageOutboxPath)
+	if errOutbox := redisqueue.ConfigureOutbox(outboxPath); errOutbox != nil {
+		log.WithError(errOutbox).Error("durable usage outbox is unavailable; usage events will be dropped until storage recovers")
+	}
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	coreauth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 
