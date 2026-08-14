@@ -47,6 +47,11 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)
 - `test/` — Cross-module integration tests
 
+## Usage Stream Heartbeat Semantics
+- The authenticated `usage` RESP subscription emits `{"heartbeat":true}` only while the usage queue is enabled.
+- Heartbeats are source watermarks, not requests. They must never include auth identifiers, models, tokens, status codes, or cost and must not enter usage accounting.
+- Keep the heartbeat interval bounded below the refill controller freshness window; disabling the usage queue must stop heartbeat output so consumers fail closed.
+
 ## Code Conventions
 - Keep changes small and simple (KISS)
 - Comments in English only

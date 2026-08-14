@@ -359,6 +359,52 @@ func TestRedisProtocol_SUBSCRIBE_UsageSendsSupportRefresh(t *testing.T) {
 	}
 }
 
+func TestRedisProtocol_SUBSCRIBE_UsageEmitsIdleHeartbeat(t *testing.T) {
+	const managementPassword = "test-management-password"
+
+	previousInterval := redisUsageHeartbeatInterval
+	redisUsageHeartbeatInterval = 10 * time.Millisecond
+	t.Cleanup(func() { redisUsageHeartbeatInterval = previousInterval })
+	t.Setenv("MANAGEMENT_PASSWORD", managementPassword)
+	redisqueue.SetEnabled(true)
+	t.Cleanup(func() { redisqueue.SetEnabled(false) })
+
+	server := newTestServer(t)
+	if !server.managementRoutesEnabled.Load() {
+		t.Fatalf("expected managementRoutesEnabled to be true")
+	}
+
+	addr, stop := startRedisMuxListener(t, server)
+	t.Cleanup(stop)
+
+	conn, errDial := net.DialTimeout("tcp", addr, time.Second)
+	if errDial != nil {
+		t.Fatalf("failed to dial redis listener: %v", errDial)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	reader := bufio.NewReader(conn)
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if errWrite := writeTestRESPCommand(conn, "AUTH", managementPassword); errWrite != nil {
+		t.Fatalf("failed to write AUTH command: %v", errWrite)
+	}
+	if msg, errRead := readTestRESPSimpleString(reader); errRead != nil || msg != "OK" {
+		t.Fatalf("unexpected AUTH response: message=%q error=%v", msg, errRead)
+	}
+	if errWrite := writeTestRESPCommand(conn, "SUBSCRIBE", "usage"); errWrite != nil {
+		t.Fatalf("failed to write SUBSCRIBE command: %v", errWrite)
+	}
+	if channel, subscriptions, errSubscribe := readTestRESPPubSubSubscribe(reader); errSubscribe != nil || channel != "usage" || subscriptions != 1 {
+		t.Fatalf("unexpected subscribe response channel=%q subscriptions=%d error=%v", channel, subscriptions, errSubscribe)
+	}
+	if channel, payload, errMessage := readTestRESPPubSubMessage(reader); errMessage != nil || channel != "usage" || string(payload) != `{"support_refresh":true}` {
+		t.Fatalf("unexpected support refresh channel=%q payload=%q error=%v", channel, payload, errMessage)
+	}
+	if channel, payload, errMessage := readTestRESPPubSubMessage(reader); errMessage != nil || channel != "usage" || string(payload) != `{"heartbeat":true}` {
+		t.Fatalf("unexpected heartbeat channel=%q payload=%q error=%v", channel, payload, errMessage)
+	}
+}
+
 func TestRedisProtocol_SUBSCRIBE_ErrorsReceivesErrorEvents(t *testing.T) {
 	const managementPassword = "test-management-password"
 
