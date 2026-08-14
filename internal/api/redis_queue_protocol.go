@@ -9,15 +9,21 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
-	redisUsageChannel  = "usage"
-	redisErrorsChannel = "errors"
+	redisUsageChannel          = "usage"
+	redisErrorsChannel         = "errors"
+	redisUsageHeartbeatPayload = `{"heartbeat":true}`
 )
+
+// The interval stays below the controller freshness window while remaining
+// independent from request volume. Tests temporarily shorten it in-package.
+var redisUsageHeartbeatInterval = 30 * time.Second
 
 type redisSubscriptionCommand struct {
 	args []string
@@ -257,6 +263,14 @@ func (s *Server) streamRedisSubscription(reader *bufio.Reader, writer *bufio.Wri
 	commands := make(chan redisSubscriptionCommand, 1)
 	go readRedisSubscriptionCommands(reader, commands, done)
 
+	var heartbeatTicker *time.Ticker
+	var heartbeat <-chan time.Time
+	if channel == redisUsageChannel {
+		heartbeatTicker = time.NewTicker(redisUsageHeartbeatInterval)
+		heartbeat = heartbeatTicker.C
+		defer heartbeatTicker.Stop()
+	}
+
 	for {
 		select {
 		case msg, ok := <-messages:
@@ -265,6 +279,20 @@ func (s *Server) streamRedisSubscription(reader *bufio.Reader, writer *bufio.Wri
 			}
 			if errWrite := writeRedisPubSubMessage(writer, channel, msg); errWrite != nil {
 				log.Errorf("redis protocol publish message error: %v", errWrite)
+				return
+			}
+			if errFlush := writer.Flush(); errFlush != nil {
+				log.Errorf("redis protocol flush error: %v", errFlush)
+				return
+			}
+		case <-heartbeat:
+			// Emit only when the usage publisher is enabled. This is a source
+			// watermark, not a synthetic request or token accounting event.
+			if !redisqueue.Enabled() {
+				continue
+			}
+			if errWrite := writeRedisPubSubMessage(writer, channel, []byte(redisUsageHeartbeatPayload)); errWrite != nil {
+				log.Errorf("redis protocol publish heartbeat error: %v", errWrite)
 				return
 			}
 			if errFlush := writer.Flush(); errFlush != nil {
