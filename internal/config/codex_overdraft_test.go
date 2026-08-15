@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestParseConfigBytesCodexWeeklyOverdraftDefaults(t *testing.T) {
@@ -68,6 +70,21 @@ func TestLoadConfigOptionalCodexWeeklyOverdraftDefaultsMatchParser(t *testing.T)
 	cfg, errLoad := LoadConfigOptional(configPath, false)
 	if errLoad != nil {
 		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+	}
+	if got, want := cfg.Codex.WeeklyOverdraft, DefaultCodexWeeklyOverdraftConfig(); got != want {
+		t.Fatalf("WeeklyOverdraft = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseConfigBytesAcceptsLegacyZeroValueConfigMarshal(t *testing.T) {
+	payload, errMarshal := yaml.Marshal(&Config{CredentialInFlight: DefaultCredentialInFlightConfig()})
+	if errMarshal != nil {
+		t.Fatalf("yaml.Marshal() error = %v", errMarshal)
+	}
+
+	cfg, errParse := ParseConfigBytes(payload)
+	if errParse != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", errParse)
 	}
 	if got, want := cfg.Codex.WeeklyOverdraft, DefaultCodexWeeklyOverdraftConfig(); got != want {
 		t.Fatalf("WeeklyOverdraft = %#v, want %#v", got, want)

@@ -43,9 +43,14 @@ func DefaultCodexWeeklyOverdraftConfig() CodexWeeklyOverdraftConfig {
 	}
 }
 
-// Normalize canonicalizes enum-like fields before validation and runtime use.
+// Normalize restores conservative defaults for legacy zero-value Config
+// marshals, then canonicalizes enum-like fields before validation and runtime use.
 func (c *CodexWeeklyOverdraftConfig) Normalize() {
 	if c == nil {
+		return
+	}
+	if *c == (CodexWeeklyOverdraftConfig{}) {
+		*c = DefaultCodexWeeklyOverdraftConfig()
 		return
 	}
 	c.Mode = strings.ToLower(strings.TrimSpace(c.Mode))
