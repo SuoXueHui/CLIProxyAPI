@@ -17,8 +17,8 @@ Implement the approved CPA-native Codex weekly overdraft request transform witho
 - [completed] 3. Add config parsing, validation, and diff coverage with failing tests first.
 - [completed] 4. Add the pure request transform and observability with failing tests first.
 - [completed] 5. Integrate the shared transform into Codex HTTP and WebSocket paths with failing tests first.
-- [pending] 6. Run focused, full, race, build, and formatting verification.
-- [pending] 7. Review changes, update project knowledge where warranted, and summarize rollout guidance.
+- [completed] 6. Run focused, full, race, build, and formatting verification.
+- [completed] 7. Review changes, update project knowledge where warranted, and summarize rollout guidance.
 
 ## Constraints
 - Work only in branch `codex/codex-weekly-overdraft-core-20260815`.
@@ -31,3 +31,5 @@ Implement the approved CPA-native Codex weekly overdraft request transform witho
 | Error | Attempt | Resolution |
 |---|---:|---|
 | `docs/superpowers` is ignored by the repository | 1 | Keep the approved design artifacts and add only their two exact paths with `git add -f`; do not change the global ignore policy. |
+| zsh passed the newline-separated changed-file list to `gofmt` as one path | 1 | Switched to `git diff -z | xargs -0 gofmt -w`, preserving filenames and shell portability. |
+| Full tests rejected YAML produced from a legacy zero-value `Config` | 1 | Added a failing compatibility test and normalized only the completely zero weekly-overdraft block to conservative disabled defaults. |

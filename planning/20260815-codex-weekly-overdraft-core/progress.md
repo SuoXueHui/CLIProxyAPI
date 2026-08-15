@@ -22,3 +22,12 @@
 - Integrated the shared transform into HTTP non-streaming, HTTP streaming, WebSocket non-streaming, and WebSocket streaming paths.
 - Added terminal outcome recording without changing CPA retry/cooldown ownership; a focused live-test server verifies 429 classification.
 - Focused executor and helper tests pass, including `go test -race ./internal/runtime/executor/helps ./internal/runtime/executor -run WeeklyOverdraft`.
+- Added the read-only management status handler test before implementing the handler or route.
+- Confirmed the management RED state: the handler method did not exist.
+- Implemented and registered `GET /v0/management/codex-weekly-overdraft`; the response contains only effective config and aggregate counters.
+- Focused management handler and API tests pass.
+- Self-review replaced the feature-local OAuth heuristic with CPA's canonical `AuthKind()` and added a failing regression test for explicit OAuth credentials carrying compatibility attributes.
+- The first full test run exposed three watcher regressions caused by YAML marshaling a legacy zero-value nested config. Added a focused failing config test, normalized only the completely zero block to disabled defaults, and reran the affected watcher tests successfully.
+- Added an end-to-end management route test covering both unauthorized and authenticated access.
+- Final verification passed: focused packages, full executor race tests, `go test ./...`, `go build -o test-output ./cmd/server && rm test-output`, disabled-path benchmark (`16.21 ns/op`, `0 B/op`, `0 allocs/op`), formatting, and diff checks.
+- Reviewed the branch diff for credential/request leakage, body retention, duplicate injection, and scheduler/retry changes; no new sensitive runtime output, blocking primitive, or retry ownership change was found.

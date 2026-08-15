@@ -19,3 +19,7 @@
 - Injected call IDs are deterministic SHA-256-derived markers scoped by auth, session, input, and pair index; only the hash appears in the transformed payload.
 - HTTP keeps a separate pre-injection `clientBody` for response translation and usage interpretation, so the synthetic history is only sent upstream and cannot change downstream translation semantics.
 - WebSocket applies the transform only after a successful upstream handshake. This avoids counting or preparing an injection when the transport falls back to HTTP, while retries rebuild `response.create` from the same already transformed body.
+- The management API can expose the complete effective config plus process-local counters without a new write API; existing full-YAML save and hot reload remain the single configuration authority.
+- OAuth gating must use CPA's canonical `Auth.AuthKind()` classification; legacy field-shape checks can misclassify explicitly tagged OAuth credentials that carry compatibility attributes.
+- Existing callers sometimes marshal a programmatically constructed zero-value `Config`. The entirely zero weekly-overdraft block is therefore treated as the disabled conservative default, while partial or enabled invalid configurations still fail validation.
+- Final verification passed focused tests, complete executor race tests, `go test ./...`, the required server build, `gofmt`, and `git diff --check`.
