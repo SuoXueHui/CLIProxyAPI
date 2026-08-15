@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -270,6 +272,114 @@ func TestCodexWeeklyOverdraftStatusCountsDecisions(t *testing.T) {
 	if got.Evaluated != 3 || got.Skipped[CodexWeeklyOverdraftReasonDisabled] != 1 || got.Observed != 1 || got.Injected != 1 {
 		t.Fatalf("snapshot = %#v", got)
 	}
+}
+
+func TestCodexWeeklyOverdraftAccountStatusSeparatesObserveAndInject(t *testing.T) {
+	resetCodexWeeklyOverdraftStatusForTest()
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
+
+	observeReq := weeklyOverdraftTestRequest(body)
+	observeReq.AuthID = "auth-account-a"
+	observeReq.Config.Mode = config.CodexWeeklyOverdraftModeObserve
+	_, observeDecision := ApplyCodexWeeklyOverdraft(observeReq)
+	RecordCodexWeeklyOverdraftOutcome(observeDecision, nil)
+
+	injectReq := weeklyOverdraftTestRequest(body)
+	injectReq.AuthID = "auth-account-a"
+	_, injectDecision := ApplyCodexWeeklyOverdraft(injectReq)
+	RecordCodexWeeklyOverdraftOutcome(injectDecision, weeklyOverdraftStatusError{status: http.StatusTooManyRequests})
+
+	otherReq := weeklyOverdraftTestRequest(body)
+	otherReq.AuthID = "auth-account-b"
+	_, otherDecision := ApplyCodexWeeklyOverdraft(otherReq)
+	RecordCodexWeeklyOverdraftOutcome(otherDecision, nil)
+
+	got := CodexWeeklyOverdraftStatusSnapshot()
+	if got.AccountRetentionSeconds != int64((6*time.Hour)/time.Second) {
+		t.Fatalf("AccountRetentionSeconds = %d", got.AccountRetentionSeconds)
+	}
+	accountA := weeklyOverdraftAccountByID(t, got.Accounts, "auth-account-a")
+	if accountA.Observed.Requests != 1 || accountA.Observed.Outcomes.Success != 1 {
+		t.Fatalf("observed account status = %#v", accountA.Observed)
+	}
+	if accountA.Injected.Requests != 1 || accountA.Injected.Outcomes.UsageLimit != 1 || accountA.Injected.Outcomes.Success != 0 {
+		t.Fatalf("injected account status = %#v", accountA.Injected)
+	}
+	if accountA.FirstSeenAt.IsZero() || accountA.LastSeenAt.Before(accountA.FirstSeenAt) {
+		t.Fatalf("account timestamps = first %s last %s", accountA.FirstSeenAt, accountA.LastSeenAt)
+	}
+	accountB := weeklyOverdraftAccountByID(t, got.Accounts, "auth-account-b")
+	if accountB.Injected.Requests != 1 || accountB.Injected.Outcomes.Success != 1 {
+		t.Fatalf("second account status = %#v", accountB.Injected)
+	}
+}
+
+func TestCodexWeeklyOverdraftAccountStatusExpiresAfterSixHoursOfInactivity(t *testing.T) {
+	resetCodexWeeklyOverdraftStatusForTest()
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	req := weeklyOverdraftTestRequest(body)
+	req.AuthID = "auth-expiring"
+	_, decision := ApplyCodexWeeklyOverdraft(req)
+	RecordCodexWeeklyOverdraftOutcome(decision, nil)
+
+	active := codexWeeklyOverdraftStatusSnapshotAt(time.Now().UTC().Add(6*time.Hour-time.Second), nil)
+	weeklyOverdraftAccountByID(t, active.Accounts, req.AuthID)
+
+	expired := codexWeeklyOverdraftStatusSnapshotAt(time.Now().UTC().Add(6*time.Hour+time.Second), nil)
+	if len(expired.Accounts) != 0 {
+		t.Fatalf("expired accounts = %#v", expired.Accounts)
+	}
+}
+
+func TestCodexWeeklyOverdraftAccountStatusFiltersRequestedAuthIDs(t *testing.T) {
+	resetCodexWeeklyOverdraftStatusForTest()
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	for _, authID := range []string{"auth-filter-a", "auth-filter-b"} {
+		req := weeklyOverdraftTestRequest(body)
+		req.AuthID = authID
+		_, decision := ApplyCodexWeeklyOverdraft(req)
+		RecordCodexWeeklyOverdraftOutcome(decision, nil)
+	}
+
+	got := CodexWeeklyOverdraftStatusSnapshot(" auth-filter-b ", "", "auth-filter-b")
+	if len(got.Accounts) != 1 || got.Accounts[0].AuthID != "auth-filter-b" {
+		t.Fatalf("filtered accounts = %#v", got.Accounts)
+	}
+}
+
+func TestCodexWeeklyOverdraftAccountStatusHandlesConcurrentRequests(t *testing.T) {
+	resetCodexWeeklyOverdraftStatusForTest()
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	const requests = 100
+
+	var wg sync.WaitGroup
+	wg.Add(requests)
+	for index := 0; index < requests; index++ {
+		go func() {
+			defer wg.Done()
+			req := weeklyOverdraftTestRequest(body)
+			req.AuthID = "auth-concurrent"
+			_, decision := ApplyCodexWeeklyOverdraft(req)
+			RecordCodexWeeklyOverdraftOutcome(decision, nil)
+		}()
+	}
+	wg.Wait()
+
+	account := weeklyOverdraftAccountByID(t, CodexWeeklyOverdraftStatusSnapshot("auth-concurrent").Accounts, "auth-concurrent")
+	if account.Injected.Requests != requests || account.Injected.Outcomes.Success != requests {
+		t.Fatalf("concurrent account status = %#v", account.Injected)
+	}
+}
+
+func weeklyOverdraftAccountByID(t *testing.T, accounts []CodexWeeklyOverdraftAccountStatus, authID string) CodexWeeklyOverdraftAccountStatus {
+	t.Helper()
+	for _, account := range accounts {
+		if account.AuthID == authID {
+			return account
+		}
+	}
+	t.Fatalf("account %q not found in %#v", authID, accounts)
+	return CodexWeeklyOverdraftAccountStatus{}
 }
 
 func assertSameBodyBacking(t *testing.T, got, want []byte) {

@@ -8,8 +8,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 )
 
-// GetCodexWeeklyOverdraftStatus returns the effective experiment config and
-// process-local aggregate counters without exposing request or credential data.
+// GetCodexWeeklyOverdraftStatus returns the effective experiment config plus
+// process-local counters. Account rows expose only management-visible auth IDs
+// and never include request payloads, sessions, tokens, or credential content.
 func (h *Handler) GetCodexWeeklyOverdraftStatus(c *gin.Context) {
 	overdraft := config.DefaultCodexWeeklyOverdraftConfig()
 	if h != nil {
@@ -21,6 +22,6 @@ func (h *Handler) GetCodexWeeklyOverdraftStatus(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"config": overdraft,
-		"status": helps.CodexWeeklyOverdraftStatusSnapshot(),
+		"status": helps.CodexWeeklyOverdraftStatusSnapshot(c.QueryArray("auth-id")...),
 	})
 }
