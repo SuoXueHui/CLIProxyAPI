@@ -14,8 +14,8 @@ Implement the approved CPA-native Codex weekly overdraft request transform witho
 ## Phases
 - [completed] 1. Revalidate latest upstream architecture and establish a clean baseline.
 - [completed] 2. Write the design and implementation plan for the approved scope.
-- [in_progress] 3. Add config parsing, validation, and diff coverage with failing tests first.
-- [pending] 4. Add the pure request transform and observability with failing tests first.
+- [completed] 3. Add config parsing, validation, and diff coverage with failing tests first.
+- [completed] 4. Add the pure request transform and observability with failing tests first.
 - [pending] 5. Integrate the shared transform into Codex HTTP and WebSocket paths with failing tests first.
 - [pending] 6. Run focused, full, race, build, and formatting verification.
 - [pending] 7. Review changes, update project knowledge where warranted, and summarize rollout guidance.

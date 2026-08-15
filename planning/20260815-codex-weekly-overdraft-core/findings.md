@@ -15,3 +15,5 @@
 - WebSocket retry paths rebuild `response.create` from the already prepared upstream body, so applying the transform once before that point prevents duplicate injection.
 - Existing full-YAML management updates and watcher-driven executor rebinding provide the feature write path and hot reload; only a read-only status endpoint is needed in core.
 - The nested config can safely use concrete scalar fields because both file and byte parsers seed the complete conservative defaults before YAML unmarshalling; explicit zero values are rejected instead of broadening behavior.
+- The disabled hot path performs one atomic counter increment, returns before JSON parsing, reuses the original body slice, and benchmarks at 0 B/op and 0 allocs/op on the current Apple M2 Pro baseline.
+- Injected call IDs are deterministic SHA-256-derived markers scoped by auth, session, input, and pair index; only the hash appears in the transformed payload.
