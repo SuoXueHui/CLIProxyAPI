@@ -75,7 +75,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if errReplay != nil {
 		return nil, errReplay
 	}
-	reporter.SetTranslatedReasoningEffort(body, to.String())
+	clientBody := body
+	body, overdraftDecision := helps.ApplyCodexWeeklyOverdraftForRequest(e.cfg, auth, req, body)
+	defer func() {
+		if err != nil {
+			helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, err)
+		}
+	}()
+	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
@@ -132,7 +139,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
+		var overdraftErr error
 		defer close(out)
+		defer func() {
+			helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, overdraftErr)
+		}()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("codex executor: close response body error: %v", errClose)
@@ -157,6 +168,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				eventType := gjson.GetBytes(data, "type").String()
 				if streamErr, terminalBody, ok := codexTerminalFailureErr(data); ok {
 					if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
+						overdraftErr = errClearReplay
 						helps.RecordAPIResponseError(ctx, e.cfg, errClearReplay)
 						reporter.PublishFailure(ctx, errClearReplay)
 						select {
@@ -166,6 +178,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 						return
 					}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+					overdraftErr = streamErr
 					reporter.PublishFailure(ctx, streamErr)
 					select {
 					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
@@ -181,7 +194,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					if detail, ok := helps.ParseCodexUsage(data); ok {
 						reporter.Publish(ctx, detail)
 					}
-					publishCodexImageToolUsage(ctx, reporter, body, data)
+					publishCodexImageToolUsage(ctx, reporter, clientBody, data)
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					if eventType == "response.completed" {
 						cacheCodexReasoningReplayFromCompleted(replayScope, data)
@@ -191,11 +204,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, body, translatedLine, &param, claudeInputTokens)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
+					overdraftErr = ctx.Err()
 					return
 				}
 			}
@@ -205,11 +219,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			if ctx.Err() != nil {
+				overdraftErr = ctx.Err()
 				return
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 		}
 		streamErr := newCodexIncompleteStreamError()
+		overdraftErr = streamErr
 		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 		reporter.PublishFailure(ctx, streamErr)
 		select {

@@ -119,7 +119,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		AuthType:  authType,
 		AuthValue: authValue,
 	}
-	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
 	var conn *websocket.Conn
 	var closer *websocketConnectionCloser
@@ -175,6 +174,15 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
+	upstreamBody, overdraftDecision := helps.ApplyCodexWeeklyOverdraftForRequest(e.cfg, auth, req, upstreamBody)
+	defer func() {
+		if err != nil {
+			helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, err)
+		}
+	}()
+	wsReqBody = buildCodexWebsocketRequestBody(upstreamBody)
+	wsReqLog.Body = wsReqBody
+	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
 	if sess == nil {
 		logCodexWebsocketConnected(executionSessionID, authID, wsURL)
@@ -268,6 +276,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		var terminateErr error
 
 		defer close(out)
+		defer func() {
+			helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, terminateErr)
+		}()
 		defer func() {
 			if sess != nil {
 				sess.clearActive(conn, readCh)

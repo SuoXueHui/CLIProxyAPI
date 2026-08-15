@@ -138,6 +138,8 @@ type CodexConfig struct {
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
+	// WeeklyOverdraft controls the experimental quota-overdraft request transform.
+	WeeklyOverdraft CodexWeeklyOverdraftConfig `yaml:"weekly-overdraft" json:"weekly-overdraft"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
 }

@@ -5,8 +5,8 @@ Merge the verified CPA-native Codex weekly-overdraft feature into maintained `ma
 
 ## Phases
 - [completed] 1. Verify feature branch, maintained master, and live production baseline.
-- [in_progress] 2. Merge feature branch into master and resolve integration conflicts without dropping custom production fixes.
-- [pending] 3. Run full tests, race tests, build, and diff review on merged master.
+- [completed] 2. Merge feature branch into master and resolve integration conflicts without dropping custom production fixes.
+- [in_progress] 3. Run full tests, race tests, build, and diff review on merged master.
 - [pending] 4. Push maintained master and prepare an amd64 production release with rollback artifacts.
 - [pending] 5. Deploy the binary with the core feature initially disabled and verify service health.
 - [pending] 6. Disable the plugin overdraft mutation, enable the core 10%/one-pair canary, and monitor health/metrics.
@@ -22,3 +22,4 @@ Merge the verified CPA-native Codex weekly-overdraft feature into maintained `ma
 ## Errors
 | Error | Attempt | Resolution |
 |---|---:|---|
+| Merge conflict in `internal/api/server_test.go` | 1 | Both branches added independent management route tests at the same insertion point; retained both tests and confirmed both quota and overdraft routes pass. |

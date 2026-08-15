@@ -124,7 +124,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		AuthType:  authType,
 		AuthValue: authValue,
 	}
-	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 
 	var conn *websocket.Conn
 	var closer *websocketConnectionCloser
@@ -162,6 +161,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
+	upstreamBody, overdraftDecision := helps.ApplyCodexWeeklyOverdraftForRequest(e.cfg, auth, req, upstreamBody)
+	defer func() {
+		helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, err)
+	}()
+	wsReqBody = buildCodexWebsocketRequestBody(upstreamBody)
+	wsReqLog.Body = wsReqBody
+	helps.RecordAPIWebsocketRequest(ctx, e.cfg, wsReqLog)
 	if sess == nil {
 		logCodexWebsocketConnected(executionSessionID, authID, wsURL)
 		defer func() {

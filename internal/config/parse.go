@@ -37,6 +37,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
+	cfg.Codex.WeeklyOverdraft = DefaultCodexWeeklyOverdraftConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
@@ -44,6 +45,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	cfg.Codex.WeeklyOverdraft.Normalize()
+	if errValidate := cfg.Codex.WeeklyOverdraft.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {

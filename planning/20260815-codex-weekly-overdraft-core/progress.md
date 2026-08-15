@@ -1,0 +1,33 @@
+# Progress
+
+## 2026-08-15
+- Confirmed the primary checkout is dirty and left it untouched.
+- Reused the already-created isolated worktree and task branch.
+- Recorded the user-approved implementation scope and started latest-upstream architecture validation.
+- Ran `go mod download && go test ./...`; the clean baseline passed.
+- Revalidated HTTP, SSE, WebSocket, config reload, and management integration points against current `origin/main`.
+- Wrote the approved design and TDD implementation plan under `docs/superpowers/`.
+- The repository ignores `docs/superpowers`; the first normal `git add` failed. The exact design and plan paths will be force-added without changing ignore rules.
+- Added the configuration/default/validation/diff tests first; implementation has not been added yet.
+- Confirmed the RED state: focused tests failed because `CodexWeeklyOverdraftConfig` and its nested field did not exist.
+- Implemented conservative defaults, normalization, validation, SDK aliases, config diff reporting, and documented YAML.
+- `go test ./internal/config ./internal/watcher/diff` passes.
+- Added pure transform and atomic metric tests before implementation, covering guards, eligible tails, stable canary selection, pair strength, idempotency, outcome classification, and skip-path body reuse.
+- Confirmed the transform RED state: focused tests failed because the request, decision, transform, and metric APIs did not exist.
+- Implemented the stateless transform, core/plugin marker idempotency, deterministic canary and call IDs, `1/2/4` pair strength, and lock-free decision/outcome counters.
+- `go test ./internal/runtime/executor/helps -run CodexWeeklyOverdraft` and the focused race run pass.
+- Disabled benchmark result: approximately `16.82 ns/op`, `0 B/op`, `0 allocs/op` on Apple M2 Pro.
+- Added HTTP observe/inject, WebSocket injection, and WebSocket resend integration tests before executor changes.
+- Confirmed the integration RED state: HTTP inject and WebSocket inject both reached upstream with only the original input item.
+- Integrated the shared transform into HTTP non-streaming, HTTP streaming, WebSocket non-streaming, and WebSocket streaming paths.
+- Added terminal outcome recording without changing CPA retry/cooldown ownership; a focused live-test server verifies 429 classification.
+- Focused executor and helper tests pass, including `go test -race ./internal/runtime/executor/helps ./internal/runtime/executor -run WeeklyOverdraft`.
+- Added the read-only management status handler test before implementing the handler or route.
+- Confirmed the management RED state: the handler method did not exist.
+- Implemented and registered `GET /v0/management/codex-weekly-overdraft`; the response contains only effective config and aggregate counters.
+- Focused management handler and API tests pass.
+- Self-review replaced the feature-local OAuth heuristic with CPA's canonical `AuthKind()` and added a failing regression test for explicit OAuth credentials carrying compatibility attributes.
+- The first full test run exposed three watcher regressions caused by YAML marshaling a legacy zero-value nested config. Added a focused failing config test, normalized only the completely zero block to disabled defaults, and reran the affected watcher tests successfully.
+- Added an end-to-end management route test covering both unauthorized and authenticated access.
+- Final verification passed: focused packages, full executor race tests, `go test ./...`, `go build -o test-output ./cmd/server && rm test-output`, disabled-path benchmark (`16.21 ns/op`, `0 B/op`, `0 allocs/op`), formatting, and diff checks.
+- Reviewed the branch diff for credential/request leakage, body retention, duplicate injection, and scheduler/retry changes; no new sensitive runtime output, blocking primitive, or retry ownership change was found.
