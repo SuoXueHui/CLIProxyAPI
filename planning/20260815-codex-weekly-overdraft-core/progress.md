@@ -17,3 +17,8 @@
 - Implemented the stateless transform, core/plugin marker idempotency, deterministic canary and call IDs, `1/2/4` pair strength, and lock-free decision/outcome counters.
 - `go test ./internal/runtime/executor/helps -run CodexWeeklyOverdraft` and the focused race run pass.
 - Disabled benchmark result: approximately `16.82 ns/op`, `0 B/op`, `0 allocs/op` on Apple M2 Pro.
+- Added HTTP observe/inject, WebSocket injection, and WebSocket resend integration tests before executor changes.
+- Confirmed the integration RED state: HTTP inject and WebSocket inject both reached upstream with only the original input item.
+- Integrated the shared transform into HTTP non-streaming, HTTP streaming, WebSocket non-streaming, and WebSocket streaming paths.
+- Added terminal outcome recording without changing CPA retry/cooldown ownership; a focused live-test server verifies 429 classification.
+- Focused executor and helper tests pass, including `go test -race ./internal/runtime/executor/helps ./internal/runtime/executor -run WeeklyOverdraft`.

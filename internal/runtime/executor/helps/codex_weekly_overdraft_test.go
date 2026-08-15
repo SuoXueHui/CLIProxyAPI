@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
@@ -73,6 +74,30 @@ func TestApplyCodexWeeklyOverdraftOAuthGate(t *testing.T) {
 	}
 	if decision.Action != CodexWeeklyOverdraftActionInjected {
 		t.Fatalf("decision = %#v", decision)
+	}
+}
+
+func TestApplyCodexWeeklyOverdraftForRequestClassifiesOAuth(t *testing.T) {
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	cfg := &config.Config{Codex: config.CodexConfig{WeeklyOverdraft: weeklyOverdraftTestConfig()}}
+	req := cliproxyexecutor.Request{
+		Payload: body,
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "session-1",
+		},
+	}
+
+	oauth := &cliproxyauth.Auth{ID: "oauth-1", Provider: "codex", Metadata: map[string]any{"access_token": "token"}}
+	got, decision := ApplyCodexWeeklyOverdraftForRequest(cfg, oauth, req, body)
+	if decision.Action != CodexWeeklyOverdraftActionInjected || len(gjson.GetBytes(got, "input").Array()) != 3 {
+		t.Fatalf("OAuth decision = %#v body=%s", decision, got)
+	}
+
+	apiKey := &cliproxyauth.Auth{ID: "key-1", Provider: "codex", Attributes: map[string]string{"api_key": "key"}}
+	got, decision = ApplyCodexWeeklyOverdraftForRequest(cfg, apiKey, req, body)
+	assertSameBodyBacking(t, got, body)
+	if decision.Reason != CodexWeeklyOverdraftReasonNonOAuth {
+		t.Fatalf("API key decision = %#v", decision)
 	}
 }
 

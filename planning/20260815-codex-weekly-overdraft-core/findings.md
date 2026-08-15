@@ -17,3 +17,5 @@
 - The nested config can safely use concrete scalar fields because both file and byte parsers seed the complete conservative defaults before YAML unmarshalling; explicit zero values are rejected instead of broadening behavior.
 - The disabled hot path performs one atomic counter increment, returns before JSON parsing, reuses the original body slice, and benchmarks at 0 B/op and 0 allocs/op on the current Apple M2 Pro baseline.
 - Injected call IDs are deterministic SHA-256-derived markers scoped by auth, session, input, and pair index; only the hash appears in the transformed payload.
+- HTTP keeps a separate pre-injection `clientBody` for response translation and usage interpretation, so the synthetic history is only sent upstream and cannot change downstream translation semantics.
+- WebSocket applies the transform only after a successful upstream handshake. This avoids counting or preparing an injection when the transport falls back to HTTP, while retries rebuild `response.create` from the same already transformed body.

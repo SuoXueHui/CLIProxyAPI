@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -66,6 +67,41 @@ type CodexWeeklyOverdraftDecision struct {
 	Reason    string
 	Tail      string
 	PairCount int
+}
+
+// ApplyCodexWeeklyOverdraftForRequest derives the stable auth/session inputs
+// from the selected CPA request and then applies the pure transform.
+func ApplyCodexWeeklyOverdraftForRequest(cfg *config.Config, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, body []byte) ([]byte, CodexWeeklyOverdraftDecision) {
+	var overdraftConfig config.CodexWeeklyOverdraftConfig
+	if cfg != nil {
+		overdraftConfig = cfg.Codex.WeeklyOverdraft
+	}
+
+	authID := ""
+	oauth := false
+	if auth != nil {
+		authID = strings.TrimSpace(auth.ID)
+		apiKey := ""
+		if auth.Attributes != nil {
+			apiKey = strings.TrimSpace(auth.Attributes["api_key"])
+		}
+		if apiKey == "" && auth.Metadata != nil {
+			accessToken, _ := auth.Metadata["access_token"].(string)
+			oauth = strings.TrimSpace(accessToken) != ""
+		}
+	}
+
+	sessionID := ProviderSessionUUID("codex", req.Metadata)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	}
+	return ApplyCodexWeeklyOverdraft(CodexWeeklyOverdraftRequest{
+		Config:    overdraftConfig,
+		AuthID:    authID,
+		SessionID: sessionID,
+		OAuth:     oauth,
+		Body:      body,
+	})
 }
 
 type codexWeeklyOverdraftCall struct {

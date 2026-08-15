@@ -71,7 +71,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if errReplay != nil {
 		return resp, errReplay
 	}
-	reporter.SetTranslatedReasoningEffort(body, to.String())
+	clientBody := body
+	body, overdraftDecision := helps.ApplyCodexWeeklyOverdraftForRequest(e.cfg, auth, req, body)
+	defer func() {
+		helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, err)
+	}()
+	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	var identityState codexIdentityConfuseState
@@ -168,7 +173,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		if detail, ok := helps.ParseCodexUsage(eventData); ok {
 			reporter.Publish(ctx, detail)
 		}
-		publishCodexImageToolUsage(ctx, reporter, body, eventData)
+		publishCodexImageToolUsage(ctx, reporter, clientBody, eventData)
 
 		completedData := patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 		if eventType == "response.completed" {
@@ -177,7 +182,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		var param any
 		clientCompletedData := applyCodexIdentityExposeResponsePayload(completedData, identityState)
-		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientCompletedData, &param)
+		out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, clientBody, clientCompletedData, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 		return resp, nil
 	}
