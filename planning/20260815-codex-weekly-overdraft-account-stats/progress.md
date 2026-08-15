@@ -10,3 +10,6 @@
 - Confirmed the expected RED state: the account DTO, retention field, filterable snapshot, and per-auth counters did not exist.
 - Implemented a bounded `sync.Map`/atomic tracker, action-scoped outcomes, six-hour expiry, deterministic snapshots, and optional management query filtering.
 - Focused tests and the account tracker race test pass.
+- Fresh full `go test ./...` passed. Account tracker package race and the new management handler race test passed.
+- Package-wide management race remains blocked by an unrelated existing `gin.SetMode` test race; repository-wide vet remains blocked by unchanged request logger/plugin callback warnings.
+- Fresh compile verification and `git diff --check` passed. Manager account UI, embedded bundle, and all Manager frontend/backend gates also passed.

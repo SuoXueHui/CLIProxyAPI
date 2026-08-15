@@ -14,9 +14,9 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 ## Phases
 1. [completed] Create the isolated feature branch and verify the clean baseline.
 2. [completed] TDD the CPA per-auth in-memory tracker, retention, filtering, and management contract.
-3. [in_progress] TDD the Manager DTO, account join/aggregation, compact UI, i18n, and embedded bundle.
-4. [pending] Run focused, full, race, type, lint, build, and embedded-asset verification.
-5. [pending] Review, merge both repositories to master, publish, and perform live read-only verification.
+3. [completed] TDD the Manager DTO, account join/aggregation, compact UI, i18n, and embedded bundle.
+4. [completed] Run focused, full, race, type, lint, build, and embedded-asset verification.
+5. [in_progress] Review, merge both repositories to master, publish, and perform live read-only verification.
 6. [pending] Check AGENTS.md and project knowledge synchronization.
 
 ## Risks and boundaries
@@ -30,3 +30,5 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 | Error | Attempt | Resolution |
 |---|---:|---|
 | Direct root `npx vitest` ignored the Manager web alias config and failed to resolve `@/` imports | 1 | Re-ran through `npm --workspace apps/web run test -- ...`; the focused baseline passed. |
+| Package-wide management race test hit an existing `gin.SetMode` global-state race in unrelated parallel tests | 1 | Keep the passing full non-race suite, run the account tracker package with `-race`, and run the new management handler test alone with `-race`; do not expand this feature into unrelated test cleanup. |
+| Repository-wide `go vet ./...` stopped on existing warnings in request logging and plugin callback context cleanup | 1 | Confirmed the feature branch does not modify those files; retain the warning as a baseline gate exception and continue with focused race plus compile verification. |
