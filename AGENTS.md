@@ -25,6 +25,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 ## Production CPA Plugin Baseline
 - Production uses the author's unmodified `Mxucc/cpa-account-config-manager` release artifacts; the previous custom fork line is retired.
 - Current production baseline: upstream release `v0.3.1332` for Linux amd64.
+- Production images that load the Linux `.so` plugin must be built with `CGO_ENABLED=1`; do not replace the image binary with a `CGO_ENABLED=0` cross-build. Verify the active binary build settings and plugin registration in an isolated candidate before rollout.
 - Before deployment, verify the release archive against the author's published checksum and keep the active plugin binary plus its SHA256 in the rollback snapshot.
 - After deployment, verify the loaded and registered plugin version, active plugin path, management UI availability, and the production container health checks.
 - Future plugin upgrades should follow the author's upstream releases unless a later project decision explicitly restores a maintained custom fork.
