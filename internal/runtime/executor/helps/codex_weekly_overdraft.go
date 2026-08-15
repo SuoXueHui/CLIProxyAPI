@@ -61,12 +61,13 @@ type CodexWeeklyOverdraftRequest struct {
 }
 
 // CodexWeeklyOverdraftDecision is an immutable request-local summary used for
-// outcome metrics. It intentionally excludes auth, session, and payload data.
+// outcome metrics. It intentionally exposes no auth, session, or payload data.
 type CodexWeeklyOverdraftDecision struct {
 	Action    string
 	Reason    string
 	Tail      string
 	PairCount int
+	account   *codexWeeklyOverdraftAccountMetric
 }
 
 // ApplyCodexWeeklyOverdraftForRequest derives the stable auth/session inputs
@@ -166,6 +167,7 @@ func ApplyCodexWeeklyOverdraft(req CodexWeeklyOverdraftRequest) ([]byte, CodexWe
 	if cfg.Mode == config.CodexWeeklyOverdraftModeObserve {
 		decision.Action = CodexWeeklyOverdraftActionObserved
 		codexWeeklyOverdraftMetrics.observed.Add(1)
+		decision.account = codexWeeklyOverdraftMetrics.accounts.track(authID, decision.Action, time.Now().UTC())
 		return req.Body, decision
 	}
 
@@ -175,6 +177,7 @@ func ApplyCodexWeeklyOverdraft(req CodexWeeklyOverdraftRequest) ([]byte, CodexWe
 	}
 	decision.Action = CodexWeeklyOverdraftActionInjected
 	codexWeeklyOverdraftMetrics.injected.Add(1)
+	decision.account = codexWeeklyOverdraftMetrics.accounts.track(authID, decision.Action, time.Now().UTC())
 	return updated, decision
 }
 
@@ -298,12 +301,14 @@ type CodexWeeklyOverdraftOutcomeSnapshot struct {
 
 // CodexWeeklyOverdraftStatus contains process-local, non-sensitive counters.
 type CodexWeeklyOverdraftStatus struct {
-	StartedAt time.Time                           `json:"started-at"`
-	Evaluated uint64                              `json:"evaluated"`
-	Skipped   map[string]uint64                   `json:"skipped"`
-	Observed  uint64                              `json:"observed"`
-	Injected  uint64                              `json:"injected"`
-	Outcomes  CodexWeeklyOverdraftOutcomeSnapshot `json:"outcomes"`
+	StartedAt               time.Time                           `json:"started-at"`
+	Evaluated               uint64                              `json:"evaluated"`
+	Skipped                 map[string]uint64                   `json:"skipped"`
+	Observed                uint64                              `json:"observed"`
+	Injected                uint64                              `json:"injected"`
+	Outcomes                CodexWeeklyOverdraftOutcomeSnapshot `json:"outcomes"`
+	AccountRetentionSeconds int64                               `json:"account-retention-seconds"`
+	Accounts                []CodexWeeklyOverdraftAccountStatus `json:"accounts"`
 }
 
 type codexWeeklyOverdraftMetricSet struct {
@@ -325,6 +330,7 @@ type codexWeeklyOverdraftMetricSet struct {
 	hardStop        atomic.Uint64
 	canceled        atomic.Uint64
 	otherFailure    atomic.Uint64
+	accounts        *codexWeeklyOverdraftAccountMetricSet
 }
 
 var codexWeeklyOverdraftMetrics = newCodexWeeklyOverdraftMetricSet()
@@ -332,6 +338,7 @@ var codexWeeklyOverdraftMetrics = newCodexWeeklyOverdraftMetricSet()
 func newCodexWeeklyOverdraftMetricSet() *codexWeeklyOverdraftMetricSet {
 	metrics := &codexWeeklyOverdraftMetricSet{}
 	metrics.startedAt.Store(time.Now().UTC().UnixNano())
+	metrics.accounts = newCodexWeeklyOverdraftAccountMetricSet()
 	return metrics
 }
 
@@ -364,31 +371,56 @@ func RecordCodexWeeklyOverdraftOutcome(decision CodexWeeklyOverdraftDecision, er
 	if decision.Action != CodexWeeklyOverdraftActionObserved && decision.Action != CodexWeeklyOverdraftActionInjected {
 		return
 	}
-	if err == nil {
+	outcome := classifyCodexWeeklyOverdraftOutcome(err)
+	decision.account.recordOutcome(decision.Action, outcome, time.Now().UTC())
+	switch outcome {
+	case codexWeeklyOverdraftOutcomeSuccess:
 		codexWeeklyOverdraftMetrics.success.Add(1)
-		return
+	case codexWeeklyOverdraftOutcomeCanceled:
+		codexWeeklyOverdraftMetrics.canceled.Add(1)
+	case codexWeeklyOverdraftOutcomeHardStop:
+		codexWeeklyOverdraftMetrics.hardStop.Add(1)
+	case codexWeeklyOverdraftOutcomeUsageLimit:
+		codexWeeklyOverdraftMetrics.usageLimit.Add(1)
+	case codexWeeklyOverdraftOutcomeOtherFailure:
+		codexWeeklyOverdraftMetrics.otherFailure.Add(1)
+	}
+}
+
+const (
+	codexWeeklyOverdraftOutcomeSuccess      = "success"
+	codexWeeklyOverdraftOutcomeUsageLimit   = "usage-limit"
+	codexWeeklyOverdraftOutcomeHardStop     = "hard-stop"
+	codexWeeklyOverdraftOutcomeCanceled     = "canceled"
+	codexWeeklyOverdraftOutcomeOtherFailure = "other-failure"
+)
+
+func classifyCodexWeeklyOverdraftOutcome(err error) string {
+	if err == nil {
+		return codexWeeklyOverdraftOutcomeSuccess
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		codexWeeklyOverdraftMetrics.canceled.Add(1)
-		return
+		return codexWeeklyOverdraftOutcomeCanceled
 	}
 	var statusErr cliproxyexecutor.StatusError
 	if errors.As(err, &statusErr) {
 		switch statusErr.StatusCode() {
 		case 401, 402, 403:
-			codexWeeklyOverdraftMetrics.hardStop.Add(1)
-			return
+			return codexWeeklyOverdraftOutcomeHardStop
 		case 429:
-			codexWeeklyOverdraftMetrics.usageLimit.Add(1)
-			return
+			return codexWeeklyOverdraftOutcomeUsageLimit
 		}
 	}
-	codexWeeklyOverdraftMetrics.otherFailure.Add(1)
+	return codexWeeklyOverdraftOutcomeOtherFailure
 }
 
 // CodexWeeklyOverdraftStatusSnapshot returns a redacted point-in-time copy of
 // all process-local counters.
-func CodexWeeklyOverdraftStatusSnapshot() CodexWeeklyOverdraftStatus {
+func CodexWeeklyOverdraftStatusSnapshot(authIDs ...string) CodexWeeklyOverdraftStatus {
+	return codexWeeklyOverdraftStatusSnapshotAt(time.Now().UTC(), authIDs)
+}
+
+func codexWeeklyOverdraftStatusSnapshotAt(now time.Time, authIDs []string) CodexWeeklyOverdraftStatus {
 	startedAt := time.Unix(0, codexWeeklyOverdraftMetrics.startedAt.Load()).UTC()
 	return CodexWeeklyOverdraftStatus{
 		StartedAt: startedAt,
@@ -413,6 +445,8 @@ func CodexWeeklyOverdraftStatusSnapshot() CodexWeeklyOverdraftStatus {
 			Canceled:     codexWeeklyOverdraftMetrics.canceled.Load(),
 			OtherFailure: codexWeeklyOverdraftMetrics.otherFailure.Load(),
 		},
+		AccountRetentionSeconds: int64(codexWeeklyOverdraftAccountRetention / time.Second),
+		Accounts:                codexWeeklyOverdraftMetrics.accounts.snapshot(now, authIDs),
 	}
 }
 
