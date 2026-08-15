@@ -16,8 +16,8 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 2. [completed] TDD the CPA per-auth in-memory tracker, retention, filtering, and management contract.
 3. [completed] TDD the Manager DTO, account join/aggregation, compact UI, i18n, and embedded bundle.
 4. [completed] Run focused, full, race, type, lint, build, and embedded-asset verification.
-5. [in_progress] Review, merge both repositories to master, publish, and perform live read-only verification.
-6. [pending] Check AGENTS.md and project knowledge synchronization.
+5. [completed] Review, merge both repositories to master, publish, and perform live read-only verification.
+6. [completed] Check AGENTS.md and project knowledge synchronization.
 
 ## Risks and boundaries
 - `auth-id` is returned only from the authenticated management endpoint and is already a management-visible credential identifier.
@@ -32,3 +32,4 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 | Direct root `npx vitest` ignored the Manager web alias config and failed to resolve `@/` imports | 1 | Re-ran through `npm --workspace apps/web run test -- ...`; the focused baseline passed. |
 | Package-wide management race test hit an existing `gin.SetMode` global-state race in unrelated parallel tests | 1 | Keep the passing full non-race suite, run the account tracker package with `-race`, and run the new management handler test alone with `-race`; do not expand this feature into unrelated test cleanup. |
 | Repository-wide `go vet ./...` stopped on existing warnings in request logging and plugin callback context cleanup | 1 | Confirmed the feature branch does not modify those files; retain the warning as a baseline gate exception and continue with focused race plus compile verification. |
+| The two-snapshot production summary exited 1 after printing both valid snapshots because the final loop's false `&& sleep` condition became the script exit status | 1 | Kept the captured JSON evidence and used an explicit final verification script whose last status is a real assertion, not a loop-control conditional. |

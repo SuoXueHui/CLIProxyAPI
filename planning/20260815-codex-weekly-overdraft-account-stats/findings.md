@@ -7,3 +7,5 @@
 - The account tracker uses `sync.Map` only for auth entry lookup/creation and per-entry atomics for steady-state requests; there is no global request mutex.
 - The endpoint accepts repeated `auth-id` filters and returns a deterministic last-seen-descending account array; without filters it returns all active entries.
 - Account entries are capped at 8192 and are removed after six hours of inactivity during status snapshots; hitting the cap drops account-only observability without changing the request or global metrics.
+- The live CPA and Manager images still point to the earlier global-panel release commits (`6e8229af` and `ef4bbd92` respectively). Publishing the account extension therefore requires replacing only those two images; Controller and its data model remain unchanged.
+- Final production evidence aligns global and account counters: `evaluated=22`, `injected=2`, global success=2, two account entries with injected requests, and summed per-account injected success=2. Two visible rows also have 7d official quota at 100%, but the UI correctly labels the CORE data as operational evidence rather than guaranteed extra entitlement.
