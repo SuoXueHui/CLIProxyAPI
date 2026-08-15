@@ -118,6 +118,29 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.OptimizeMultiAgentV2 != newCfg.Codex.OptimizeMultiAgentV2 {
 		changes = append(changes, fmt.Sprintf("codex.optimize-multi-agent-v2: %t -> %t", oldCfg.Codex.OptimizeMultiAgentV2, newCfg.Codex.OptimizeMultiAgentV2))
 	}
+	oldOverdraft := oldCfg.Codex.WeeklyOverdraft
+	newOverdraft := newCfg.Codex.WeeklyOverdraft
+	if oldOverdraft.Enabled != newOverdraft.Enabled {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.enabled: %t -> %t", oldOverdraft.Enabled, newOverdraft.Enabled))
+	}
+	if oldOverdraft.Mode != newOverdraft.Mode {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.mode: %s -> %s", oldOverdraft.Mode, newOverdraft.Mode))
+	}
+	if oldOverdraft.CanaryPercent != newOverdraft.CanaryPercent {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.canary-percent: %d -> %d", oldOverdraft.CanaryPercent, newOverdraft.CanaryPercent))
+	}
+	if oldOverdraft.PairCount != newOverdraft.PairCount {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.pair-count: %d -> %d", oldOverdraft.PairCount, newOverdraft.PairCount))
+	}
+	if oldOverdraft.TailPolicy != newOverdraft.TailPolicy {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.tail-policy: %s -> %s", oldOverdraft.TailPolicy, newOverdraft.TailPolicy))
+	}
+	if oldOverdraft.OAuthOnly != newOverdraft.OAuthOnly {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.oauth-only: %t -> %t", oldOverdraft.OAuthOnly, newOverdraft.OAuthOnly))
+	}
+	if oldOverdraft.MaxBodyBytes != newOverdraft.MaxBodyBytes {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.max-body-bytes: %d -> %d", oldOverdraft.MaxBodyBytes, newOverdraft.MaxBodyBytes))
+	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}

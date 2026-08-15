@@ -232,6 +232,16 @@ codex:
   # normalizes encrypted agent_message content for Codex, and converts agent_message input
   # into standard user messages for non-Codex upstream protocols.
   optimize-multi-agent-v2: false
+  # Experimental generation after Codex 5-hour or 7-day quota exhaustion.
+  # This is a stateless request transform, not a quota bypass guarantee. Start in observe mode.
+  weekly-overdraft:
+    enabled: false
+    mode: observe # observe (no mutation) or inject
+    canary-percent: 10 # stable auth/session percentage, 1-100
+    pair-count: 1 # allowed values: 1, 2, 4; 1 is recommended
+    tail-policy: user-and-tool-output # user-only or user-and-tool-output
+    oauth-only: true
+    max-body-bytes: 8388608 # maximum 32 MiB
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:
