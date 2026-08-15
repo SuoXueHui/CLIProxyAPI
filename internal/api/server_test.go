@@ -1304,6 +1304,42 @@ func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 	}
 }
 
+func TestCodexWeeklyOverdraftManagementRoute(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	overdraft := proxyconfig.DefaultCodexWeeklyOverdraftConfig()
+	overdraft.Enabled = true
+	overdraft.Mode = proxyconfig.CodexWeeklyOverdraftModeInject
+	overdraft.CanaryPercent = 25
+	server.cfg.Codex.WeeklyOverdraft = overdraft
+
+	unauthorized := httptest.NewRequest(http.MethodGet, "/v0/management/codex-weekly-overdraft", nil)
+	unauthorizedRecorder := httptest.NewRecorder()
+	server.engine.ServeHTTP(unauthorizedRecorder, unauthorized)
+	if unauthorizedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want %d; body=%s", unauthorizedRecorder.Code, http.StatusUnauthorized, unauthorizedRecorder.Body.String())
+	}
+
+	authorized := httptest.NewRequest(http.MethodGet, "/v0/management/codex-weekly-overdraft", nil)
+	authorized.Header.Set("Authorization", "Bearer test-management-key")
+	authorizedRecorder := httptest.NewRecorder()
+	server.engine.ServeHTTP(authorizedRecorder, authorized)
+	if authorizedRecorder.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, want %d; body=%s", authorizedRecorder.Code, http.StatusOK, authorizedRecorder.Body.String())
+	}
+
+	var payload struct {
+		Config proxyconfig.CodexWeeklyOverdraftConfig `json:"config"`
+	}
+	if errUnmarshal := json.Unmarshal(authorizedRecorder.Body.Bytes(), &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal response: %v", errUnmarshal)
+	}
+	if !payload.Config.Enabled || payload.Config.Mode != proxyconfig.CodexWeeklyOverdraftModeInject || payload.Config.CanaryPercent != 25 {
+		t.Fatalf("config = %#v", payload.Config)
+	}
+}
+
 func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
