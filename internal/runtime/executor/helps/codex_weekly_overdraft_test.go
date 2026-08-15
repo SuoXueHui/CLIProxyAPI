@@ -99,6 +99,19 @@ func TestApplyCodexWeeklyOverdraftForRequestClassifiesOAuth(t *testing.T) {
 	if decision.Reason != CodexWeeklyOverdraftReasonNonOAuth {
 		t.Fatalf("API key decision = %#v", decision)
 	}
+
+	explicitOAuth := &cliproxyauth.Auth{
+		ID:       "oauth-explicit",
+		Provider: "codex",
+		Attributes: map[string]string{
+			cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth,
+			cliproxyauth.AttributeAPIKey:   "compatibility-token",
+		},
+	}
+	got, decision = ApplyCodexWeeklyOverdraftForRequest(cfg, explicitOAuth, req, body)
+	if decision.Action != CodexWeeklyOverdraftActionInjected || len(gjson.GetBytes(got, "input").Array()) != 3 {
+		t.Fatalf("explicit OAuth decision = %#v body=%s", decision, got)
+	}
 }
 
 func TestApplyCodexWeeklyOverdraftEligibleTails(t *testing.T) {

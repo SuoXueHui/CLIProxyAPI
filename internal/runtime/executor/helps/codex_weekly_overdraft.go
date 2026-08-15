@@ -81,14 +81,9 @@ func ApplyCodexWeeklyOverdraftForRequest(cfg *config.Config, auth *cliproxyauth.
 	oauth := false
 	if auth != nil {
 		authID = strings.TrimSpace(auth.ID)
-		apiKey := ""
-		if auth.Attributes != nil {
-			apiKey = strings.TrimSpace(auth.Attributes["api_key"])
-		}
-		if apiKey == "" && auth.Metadata != nil {
-			accessToken, _ := auth.Metadata["access_token"].(string)
-			oauth = strings.TrimSpace(accessToken) != ""
-		}
+		// Reuse CPA's canonical credential classification so explicit auth-kind
+		// metadata wins over legacy field-shape fallbacks.
+		oauth = auth.AuthKind() == cliproxyauth.AuthKindOAuth
 	}
 
 	sessionID := ProviderSessionUUID("codex", req.Metadata)
