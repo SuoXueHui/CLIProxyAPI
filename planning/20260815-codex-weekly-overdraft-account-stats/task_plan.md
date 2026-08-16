@@ -19,6 +19,8 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 5. [completed] Review, merge both repositories to master, publish, and perform live read-only verification.
 6. [completed] Check AGENTS.md and project knowledge synchronization.
 7. [completed] Attempt the 25%/1-pair phase-two canary behind a stability gate and restore 10% when the first 11 injected outcomes were all hard stops.
+8. [completed] Re-enable and hold 25%/1-pair at the user's direction so valid accounts can be imported, while gating only on CPA/Manager/Controller service health until useful account traffic exists.
+9. [pending] After valid accounts are imported, observe account-level success/429/hard-stop results and decide whether to keep 25%, adjust, or roll back.
 
 ## Risks and boundaries
 - `auth-id` is returned only from the authenticated management endpoint and is already a management-visible credential identifier.
@@ -26,6 +28,7 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 - Account stats are operational evidence, not proof of upstream quota amount or extra token entitlement.
 - Retention is inactivity TTL, not a persisted exact sliding-window ledger.
 - Account tracking must be bounded and must never block or fail the upstream request path.
+- During the pre-import hold, zero successful overdraft outcomes is not by itself a rollback trigger because the known account pool currently has OAuth failures; restart/OOM, endpoint health, config drift, reload failure, or new severe service errors remain rollback triggers.
 
 ## Errors
 | Error | Attempt | Resolution |
@@ -34,3 +37,5 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 | Package-wide management race test hit an existing `gin.SetMode` global-state race in unrelated parallel tests | 1 | Keep the passing full non-race suite, run the account tracker package with `-race`, and run the new management handler test alone with `-race`; do not expand this feature into unrelated test cleanup. |
 | Repository-wide `go vet ./...` stopped on existing warnings in request logging and plugin callback context cleanup | 1 | Confirmed the feature branch does not modify those files; retain the warning as a baseline gate exception and continue with focused race plus compile verification. |
 | The two-snapshot production summary exited 1 after printing both valid snapshots because the final loop's false `&& sleep` condition became the script exit status | 1 | Kept the captured JSON evidence and used an explicit final verification script whose last status is a real assertion, not a loop-control conditional. |
+| The 25% hold release aborted before PUT because the strict diff whitelist did not account for timestamped `---`/`+++` file header lines | 1 | Confirmed no live mutation occurred, corrected only the whitelist expression, and retained the one-field config assertion. |
+| The corrected 25% hold script still exited before PUT because `pipefail` treated an intentionally empty `grep -Ev` result as an error | 1 | Confirmed no live mutation occurred again, replaced the empty-result pipeline with an `awk` counter, and kept the candidate delta guard intact. |
