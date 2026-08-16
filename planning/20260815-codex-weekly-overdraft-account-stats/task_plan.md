@@ -21,6 +21,7 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 7. [completed] Attempt the 25%/1-pair phase-two canary behind a stability gate and restore 10% when the first 11 injected outcomes were all hard stops.
 8. [completed] Re-enable and hold 25%/1-pair at the user's direction so valid accounts can be imported, while gating only on CPA/Manager/Controller service health until useful account traffic exists.
 9. [pending] After valid accounts are imported, observe account-level success/429/hard-stop results and decide whether to keep 25%, adjust, or roll back.
+10. [pending] Reconcile stale active Codex auth files after the current 401 investigation; keep the freshly validated credential and prevent invalidated refresh tokens from remaining in the request pool.
 
 ## Risks and boundaries
 - `auth-id` is returned only from the authenticated management endpoint and is already a management-visible credential identifier.
@@ -39,3 +40,5 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 | The two-snapshot production summary exited 1 after printing both valid snapshots because the final loop's false `&& sleep` condition became the script exit status | 1 | Kept the captured JSON evidence and used an explicit final verification script whose last status is a real assertion, not a loop-control conditional. |
 | The 25% hold release aborted before PUT because the strict diff whitelist did not account for timestamped `---`/`+++` file header lines | 1 | Confirmed no live mutation occurred, corrected only the whitelist expression, and retained the one-field config assertion. |
 | The corrected 25% hold script still exited before PUT because `pipefail` treated an intentionally empty `grep -Ev` result as an error | 1 | Confirmed no live mutation occurred again, replaced the empty-result pipeline with an `awk` counter, and kept the candidate delta guard intact. |
+| The first live account probe used the generic `/v0/management/accounts` path and received 404 | 1 | Read the deployed Manager router and used the actual `/v0/management/cpa-refill/accounts` route. |
+| One log-context shell probe was truncated by nested local/remote quoting | 1 | Re-ran the same read-only inspection through an SSH heredoc; no production state changed. |
