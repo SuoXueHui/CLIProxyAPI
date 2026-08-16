@@ -23,7 +23,8 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 9. [completed] After valid accounts were imported, observe account-level success/429/hard-stop results and decide to keep 25% because success recovered while credential reselection and 503 pressure remain material.
 10. [pending] Reconcile stale active Codex auth files after the current 401 investigation; keep the freshly validated credential and prevent invalidated refresh tokens from remaining in the request pool.
 11. [pending] Re-evaluate a 40% canary only after at least one additional stable observation window shows low credential reselection and sustained 503 below 1%; do not increase pair count at the same time.
-12. [in_progress] User-directed 50% canary escalation: keep one pair and OAuth-only, verify the single-field diff, then observe post-change 401/429/503 and process health before deciding whether to hold or roll back.
+12. [completed] User-directed 50% canary escalation: keep one pair and OAuth-only, verify the single-field diff, then observe post-change 401/429/503 and process health. The sustained window regressed materially, so 50% is not approved for continued stable operation.
+13. [pending] Restore 25% after user approval, then verify config convergence, reload, process health, and a fresh post-rollback request window without restarting CPA.
 
 ## Risks and boundaries
 - `auth-id` is returned only from the authenticated management endpoint and is already a management-visible credential identifier.
