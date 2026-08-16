@@ -20,8 +20,9 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 6. [completed] Check AGENTS.md and project knowledge synchronization.
 7. [completed] Attempt the 25%/1-pair phase-two canary behind a stability gate and restore 10% when the first 11 injected outcomes were all hard stops.
 8. [completed] Re-enable and hold 25%/1-pair at the user's direction so valid accounts can be imported, while gating only on CPA/Manager/Controller service health until useful account traffic exists.
-9. [pending] After valid accounts are imported, observe account-level success/429/hard-stop results and decide whether to keep 25%, adjust, or roll back.
+9. [completed] After valid accounts were imported, observe account-level success/429/hard-stop results and decide to keep 25% because success recovered while credential reselection and 503 pressure remain material.
 10. [pending] Reconcile stale active Codex auth files after the current 401 investigation; keep the freshly validated credential and prevent invalidated refresh tokens from remaining in the request pool.
+11. [pending] Re-evaluate a 40% canary only after at least one additional stable observation window shows low credential reselection and sustained 503 below 1%; do not increase pair count at the same time.
 
 ## Risks and boundaries
 - `auth-id` is returned only from the authenticated management endpoint and is already a management-visible credential identifier.
