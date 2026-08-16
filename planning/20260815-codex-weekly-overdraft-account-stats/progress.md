@@ -27,3 +27,4 @@
 - The live six-hour snapshot now contains 74 accounts and 923 injected requests, split into 540 success, 81 usage-limit, 298 hard-stop, 0 canceled, and 4 other-failure. The newest entry was active within seconds of the check, proving the account tracker is still advancing under real traffic.
 - Chrome confirms the global CORE card and per-account `CORE 6h` strips render current injected/success/429/hard-stop values without overlap; the browser console has no warning/error.
 - Reconfirmed the author plugin v0.3.1332 is enabled/registered for account management but its own weekly-overdraft experiment remains disabled, avoiding double injection.
+- Final gate: three root/health/page checks returned 200, five authenticated CORE status samples returned 200 in 106--130 ms, and no CPA/Manager panic/fatal/OOM logs appeared. One unrelated monitoring analytics 500 was traced to a canceled projection query; CORE requests in the same interval stayed 200.
