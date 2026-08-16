@@ -18,6 +18,7 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 4. [completed] Run focused, full, race, type, lint, build, and embedded-asset verification.
 5. [completed] Review, merge both repositories to master, publish, and perform live read-only verification.
 6. [completed] Check AGENTS.md and project knowledge synchronization.
+7. [completed] Attempt the 25%/1-pair phase-two canary behind a stability gate and restore 10% when the first 11 injected outcomes were all hard stops.
 
 ## Risks and boundaries
 - `auth-id` is returned only from the authenticated management endpoint and is already a management-visible credential identifier.

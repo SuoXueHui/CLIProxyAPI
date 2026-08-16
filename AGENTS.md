@@ -21,6 +21,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `.env` is auto-loaded from the working directory
 - Auth material defaults under `auths/`
 - Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
+- Production bind-mounts `config.yaml` as a single file. Do not atomically replace the host path while the container is running because the container remains attached to the old inode. Apply validated full-YAML changes through authenticated `PUT /v0/management/config.yaml`, verify a new successful reload log plus runtime state, and keep host/container config checksums aligned across restart.
 
 ## Production CPA Plugin Baseline
 - Production uses the author's unmodified `Mxucc/cpa-account-config-manager` release artifacts; the previous custom fork line is retired.
