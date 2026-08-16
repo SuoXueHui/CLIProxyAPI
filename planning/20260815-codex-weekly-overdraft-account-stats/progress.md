@@ -21,3 +21,9 @@
 - Final live verification at `2026-08-15T15:33:44Z`: CPA running restart=0/OOM=false, Manager running/healthy restart=0/OOM=false, root=200, unauthenticated models=401, Manager health/page=200, author plugin v0.3.1332 loaded and registered, selected severe logs absent, release checksums and rollback scripts valid.
 - The live account snapshot has retention 21600 seconds, 2 tracked injected accounts, 2 injected requests, and 2 successful injected outcomes with no 429 or hard stop. Chrome shows the global CORE panel and per-account `CORE 6h` strips; two visible accounts each show `注入 1 / 成功 1`, and the browser console has no warning/error.
 - Updated project AGENTS.md with the six-hour in-memory/action-separated contract and synchronized the CLIProxyAPI production change record in Obsidian.
+
+## 2026-08-16
+- Continued with a fresh read-only production check about 14 hours after deployment. CPA, Manager, and Controller remain running; CPA and Manager have restart=0/OOM=false, Manager is healthy, root/health/management endpoints return the expected 200/401 statuses, and selected panic/fatal/OOM logs remain absent.
+- The live six-hour snapshot now contains 74 accounts and 923 injected requests, split into 540 success, 81 usage-limit, 298 hard-stop, 0 canceled, and 4 other-failure. The newest entry was active within seconds of the check, proving the account tracker is still advancing under real traffic.
+- Chrome confirms the global CORE card and per-account `CORE 6h` strips render current injected/success/429/hard-stop values without overlap; the browser console has no warning/error.
+- Reconfirmed the author plugin v0.3.1332 is enabled/registered for account management but its own weekly-overdraft experiment remains disabled, avoiding double injection.
