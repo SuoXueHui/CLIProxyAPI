@@ -25,8 +25,9 @@ Expose per-auth Codex weekly-overdraft activity for the most recent six hours wi
 11. [pending] Re-evaluate a 40% canary only after at least one additional stable observation window shows low credential reselection and sustained 503 below 1%; do not increase pair count at the same time.
 12. [completed] User-directed 50% canary escalation: keep one pair and OAuth-only, verify the single-field diff, then observe post-change 401/429/503 and process health. The sustained window regressed materially, so 50% is not approved for continued stable operation.
 13. [completed] Restore 25% under the existing stability-first authorization, verify the exact one-field diff, config convergence, hot reload, process health, and post-rollback request windows without restarting CPA.
-14. [in_progress] Recover account capacity before any future canary increase. Capacity has recovered to 14 usable accounts with zero gap, but unavailable-credential reselection and 429 remain too volatile for an increase.
-15. [pending] Consider a controlled 40%/1-pair canary only after at least two consecutive 15-minute buckets hold HTTP 503 below 1%, request-level reselection below 15%, HTTP 429 below 5%, and at least 10 usable accounts with zero capacity gap.
+14. [completed] Re-check apparent account capacity recovery. Manager reported 14 usable accounts and zero gap, but the runtime pool still contained substantial quota exhaustion and credential churn, so this aggregate was not a reliable expansion signal by itself.
+15. [completed] Execute the user-directed 40%/1-pair trial with an exact one-field diff and automatic stability rollback. The trial failed immediately, was restored to 25%, and required one CPA restart to clear in-memory unavailable/cooldown state and recover responses.
+16. [pending] Before any future increase, reconcile Controller `usable accounts` with CPA runtime-selectable credentials and add a stronger preflight/rollback gate that detects false capacity before exposing more sessions. Do not retry above 25% until this mismatch is resolved.
 
 ## Risks and boundaries
 - `auth-id` is returned only from the authenticated management endpoint and is already a management-visible credential identifier.
