@@ -5,10 +5,54 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+func TestFileTokenStoreListKeepsCreationTimeAfterFileRewrite(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "codex.json")
+	if err := os.WriteFile(path, []byte(`{"type":"codex","email":"test@example.com"}`), 0o600); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	first, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("first List() error: %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("first List() len = %d, want 1", len(first))
+	}
+	createdAt := first[0].CreatedAt
+	if createdAt.IsZero() {
+		t.Skip("filesystem does not expose a creation time")
+	}
+
+	future := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	if err := os.WriteFile(path, []byte(`{"type":"codex","email":"rewritten@example.com"}`), 0o600); err != nil {
+		t.Fatalf("rewrite auth file: %v", err)
+	}
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("change rewritten mtime: %v", err)
+	}
+	second, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("second List() error: %v", err)
+	}
+	if len(second) != 1 {
+		t.Fatalf("second List() len = %d, want 1", len(second))
+	}
+	if !second[0].CreatedAt.Equal(createdAt) {
+		t.Fatalf("CreatedAt changed from %v to %v after rewrite", createdAt, second[0].CreatedAt)
+	}
+	if !second[0].UpdatedAt.Equal(future) {
+		t.Fatalf("UpdatedAt = %v, want %v", second[0].UpdatedAt, future)
+	}
+}
 
 func TestExtractAccessToken(t *testing.T) {
 	t.Parallel()

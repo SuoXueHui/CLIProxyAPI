@@ -12,6 +12,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/filetime"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -76,6 +77,17 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		return nil, nil
 	}
 	now := ctx.Now
+	fileInfo, errStat := os.Stat(fullPath)
+	if errStat == nil {
+		// Birth time is stable across token refreshes; mtime remains the update signal.
+		if created := filetime.CreationTime(fullPath); !created.IsZero() {
+			now = created
+		}
+	}
+	updatedAt := now
+	if errStat == nil {
+		updatedAt = fileInfo.ModTime()
+	}
 	cfg := ctx.Config
 	var metadata map[string]any
 	if errUnmarshal := json.Unmarshal(data, &metadata); errUnmarshal != nil {
@@ -112,7 +124,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 					coreauth.MarkPluginVirtualAuth(auth, fullPath, index)
 				}
 				auth.CreatedAt = now
-				auth.UpdatedAt = now
+				auth.UpdatedAt = updatedAt
 				if auth.Attributes == nil {
 					auth.Attributes = make(map[string]string)
 				}
@@ -194,7 +206,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 		ProxyURL:  proxyURL,
 		Metadata:  metadata,
 		CreatedAt: now,
-		UpdatedAt: now,
+		UpdatedAt: updatedAt,
 	}
 	// Read priority from auth file.
 	if rawPriority, ok := metadata["priority"]; ok {
