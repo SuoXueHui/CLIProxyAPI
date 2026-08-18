@@ -66,7 +66,7 @@ type Config struct {
 	// The literal "disabled" keeps the legacy in-memory queue for compatibility.
 	UsageOutboxPath string `yaml:"usage-outbox-path" json:"usage-outbox-path"`
 
-	// DisableCooling disables quota cooldown scheduling when true.
+	// DisableCooling disables auth/model cooldown scheduling when true unless a credential or provider overrides it.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
 	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.

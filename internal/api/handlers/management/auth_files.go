@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/filetime"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -240,7 +241,16 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 			continue
 		}
 		if info, errInfo := e.Info(); errInfo == nil {
-			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime()}
+			createdAt := filetime.CreationTime(filepath.Join(h.cfg.AuthDir, name))
+			if createdAt.IsZero() {
+				createdAt = info.ModTime()
+			}
+			fileData := gin.H{
+				"name":       name,
+				"size":       info.Size(),
+				"modtime":    info.ModTime(),
+				"created_at": createdAt,
+			}
 
 			// Read file to get type field
 			full := filepath.Join(h.cfg.AuthDir, name)

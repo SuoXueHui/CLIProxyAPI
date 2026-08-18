@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/filetime"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -248,6 +249,11 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 	if errStat != nil {
 		return nil, fmt.Errorf("stat file: %w", errStat)
 	}
+	updatedAt := info.ModTime()
+	createdAt := filetime.CreationTime(path)
+	if createdAt.IsZero() {
+		createdAt = updatedAt
+	}
 	if parser := currentPluginAuthParser(); parser != nil {
 		auths, handled, errParse := parsePluginAuthFile(parser, pluginapi.AuthParseRequest{
 			Provider: provider,
@@ -268,8 +274,8 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 				if len(auths) > 1 {
 					cliproxyauth.MarkPluginVirtualAuth(auth, path, index)
 				}
-				auth.CreatedAt = info.ModTime()
-				auth.UpdatedAt = info.ModTime()
+				auth.CreatedAt = createdAt
+				auth.UpdatedAt = updatedAt
 				if auth.Attributes == nil {
 					auth.Attributes = make(map[string]string)
 				}
@@ -320,6 +326,10 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 	if errStat != nil {
 		return nil, fmt.Errorf("stat file: %w", errStat)
 	}
+	updatedAt = info.ModTime()
+	if refreshedCreatedAt := filetime.CreationTime(path); !refreshedCreatedAt.IsZero() {
+		createdAt = refreshedCreatedAt
+	}
 	id := s.idFor(path, baseDir)
 	disabled, _ := metadata["disabled"].(bool)
 	status := cliproxyauth.StatusActive
@@ -339,8 +349,8 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 			cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceFile,
 		},
 		Metadata:         metadata,
-		CreatedAt:        info.ModTime(),
-		UpdatedAt:        info.ModTime(),
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: time.Time{},
 	}
