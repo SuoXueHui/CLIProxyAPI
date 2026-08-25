@@ -36,6 +36,13 @@ type Setting struct {
 	URL  *url.URL
 }
 
+// Options controls optional source binding for proxy transports.
+// SourceIP must be a local IPv6 address; an empty value preserves the
+// historical behavior of the compatibility builders below.
+type Options struct {
+	SourceIP string
+}
+
 // Parse normalizes a proxy configuration value into inherit, direct, or proxy modes.
 func Parse(raw string) (Setting, error) {
 	trimmed := strings.TrimSpace(raw)
@@ -88,6 +95,17 @@ func NewDirectTransport() *http.Transport {
 
 // BuildHTTPTransport constructs an HTTP transport for the provided proxy setting.
 func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
+	return BuildHTTPTransportWithOptions(raw, Options{})
+}
+
+// BuildHTTPTransportWithOptions constructs an HTTP transport and optionally
+// binds every outbound TCP connection to a local IPv6 source address.
+func BuildHTTPTransportWithOptions(raw string, options Options) (*http.Transport, Mode, error) {
+	localAddr, errLocalAddr := parseSourceIPv6(options.SourceIP)
+	if errLocalAddr != nil {
+		return nil, ModeInvalid, errLocalAddr
+	}
+
 	setting, errParse := Parse(raw)
 	if errParse != nil {
 		return nil, setting.Mode, errParse
@@ -95,9 +113,16 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 
 	switch setting.Mode {
 	case ModeInherit:
+		if localAddr != nil {
+			transport := cloneDefaultTransport()
+			applyLocalAddr(transport, localAddr)
+			return transport, setting.Mode, nil
+		}
 		return nil, setting.Mode, nil
 	case ModeDirect:
-		return NewDirectTransport(), setting.Mode, nil
+		transport := NewDirectTransport()
+		applyLocalAddr(transport, localAddr)
+		return transport, setting.Mode, nil
 	case ModeProxy:
 		if setting.URL.Scheme == "socks5" || setting.URL.Scheme == "socks5h" {
 			var proxyAuth *proxy.Auth
@@ -106,19 +131,27 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 				password, _ := setting.URL.User.Password()
 				proxyAuth = &proxy.Auth{User: username, Password: password}
 			}
-			dialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, proxy.Direct)
+			forwardDialer := proxy.Dialer(proxy.Direct)
+			if localAddr != nil {
+				forwardDialer = &net.Dialer{LocalAddr: localAddr}
+			}
+			dialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, forwardDialer)
 			if errSOCKS5 != nil {
 				return nil, setting.Mode, fmt.Errorf("create SOCKS5 dialer failed: %w", errSOCKS5)
 			}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
-			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+					return contextDialer.DialContext(ctx, network, addr)
+				}
 				return dialer.Dial(network, addr)
 			}
 			return transport, setting.Mode, nil
 		}
 		transport := cloneDefaultTransport()
 		transport.Proxy = http.ProxyURL(setting.URL)
+		applyLocalAddr(transport, localAddr)
 		return transport, setting.Mode, nil
 	default:
 		return nil, setting.Mode, nil
@@ -127,6 +160,17 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 
 // BuildDialer constructs a proxy dialer for settings that operate at the connection layer.
 func BuildDialer(raw string) (proxy.Dialer, Mode, error) {
+	return BuildDialerWithOptions(raw, Options{})
+}
+
+// BuildDialerWithOptions constructs a connection-level proxy dialer and
+// optionally binds its connection to a local IPv6 source address.
+func BuildDialerWithOptions(raw string, options Options) (proxy.Dialer, Mode, error) {
+	localAddr, errLocalAddr := parseSourceIPv6(options.SourceIP)
+	if errLocalAddr != nil {
+		return nil, ModeInvalid, errLocalAddr
+	}
+
 	setting, errParse := Parse(raw)
 	if errParse != nil {
 		return nil, setting.Mode, errParse
@@ -134,14 +178,28 @@ func BuildDialer(raw string) (proxy.Dialer, Mode, error) {
 
 	switch setting.Mode {
 	case ModeInherit:
+		if localAddr != nil {
+			return &net.Dialer{LocalAddr: localAddr}, setting.Mode, nil
+		}
 		return nil, setting.Mode, nil
 	case ModeDirect:
+		if localAddr != nil {
+			return &net.Dialer{LocalAddr: localAddr}, setting.Mode, nil
+		}
 		return proxy.Direct, setting.Mode, nil
 	case ModeProxy:
 		if setting.URL.Scheme == "http" || setting.URL.Scheme == "https" {
-			return &httpConnectDialer{proxyURL: setting.URL, dialer: proxy.Direct}, setting.Mode, nil
+			proxyDialer := proxy.Dialer(proxy.Direct)
+			if localAddr != nil {
+				proxyDialer = &net.Dialer{LocalAddr: localAddr}
+			}
+			return &httpConnectDialer{proxyURL: setting.URL, dialer: proxyDialer}, setting.Mode, nil
 		}
-		dialer, errDialer := proxy.FromURL(setting.URL, proxy.Direct)
+		forwardDialer := proxy.Dialer(proxy.Direct)
+		if localAddr != nil {
+			forwardDialer = &net.Dialer{LocalAddr: localAddr}
+		}
+		dialer, errDialer := proxy.FromURL(setting.URL, forwardDialer)
 		if errDialer != nil {
 			return nil, setting.Mode, fmt.Errorf("create proxy dialer failed: %w", errDialer)
 		}
@@ -149,6 +207,32 @@ func BuildDialer(raw string) (proxy.Dialer, Mode, error) {
 	default:
 		return nil, setting.Mode, nil
 	}
+}
+
+func parseSourceIPv6(raw string) (*net.TCPAddr, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+	if strings.Contains(trimmed, "%") {
+		return nil, fmt.Errorf("source IP must be a global IPv6 address")
+	}
+	ip := net.ParseIP(trimmed)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid source IPv6 address")
+	}
+	if ip.To4() != nil {
+		return nil, fmt.Errorf("source IP must be an IPv6 address")
+	}
+	return &net.TCPAddr{IP: ip.To16()}, nil
+}
+
+func applyLocalAddr(transport *http.Transport, localAddr *net.TCPAddr) {
+	if localAddr == nil {
+		return
+	}
+	dialer := &net.Dialer{LocalAddr: localAddr}
+	transport.DialContext = dialer.DialContext
 }
 
 type httpConnectDialer struct {

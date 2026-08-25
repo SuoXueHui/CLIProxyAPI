@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -253,6 +254,15 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		log.Warnf("failed to synthesize config API key auths: %v", errSynthesize)
 		return
 	}
+	var egressAllocator *egress.Allocator
+	if cfg.IPv6Egress.Enabled {
+		var errEgress error
+		egressAllocator, errEgress = egress.NewAllocator(cfg.IPv6Egress)
+		if errEgress != nil {
+			log.Errorf("invalid ipv6-egress configuration while registering API keys: %v", errEgress)
+			return
+		}
+	}
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
 	tasks := make([]modelRegistrationTask, 0, len(auths))
@@ -260,6 +270,20 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 	for _, auth := range auths {
 		if !coreauth.IsConfigAPIKeyAuth(auth) {
 			continue
+		}
+		if egressAllocator != nil && egressAllocator.Enabled() {
+			ip, errResolve := egressAllocator.Resolve(auth.ID)
+			if errResolve != nil {
+				log.Errorf("failed to resolve IPv6 egress for auth %q: %v", auth.ID, errResolve)
+				continue
+			}
+			if ip != nil {
+				if errEnsure := egress.EnsureAddress(cfg.IPv6Egress, ip); errEnsure != nil {
+					log.Errorf("failed to add IPv6 egress address for auth %q: %v", auth.ID, errEnsure)
+					continue
+				}
+				auth.EgressIPv6 = ip.String()
+			}
 		}
 		prepared := s.prepareCoreAuthForModelRegistration(registrationCtx, auth)
 		if prepared == nil {

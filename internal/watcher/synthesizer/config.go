@@ -56,6 +56,13 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
+	if ctx != nil && ctx.Config != nil && ctx.Config.IPv6Egress.Enabled {
+		for _, auth := range out {
+			if errEgress := applyEgressIPv6(ctx, auth); errEgress != nil {
+				return nil, errEgress
+			}
+		}
+	}
 
 	return out, nil
 }

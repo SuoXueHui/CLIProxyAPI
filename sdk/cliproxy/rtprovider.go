@@ -11,7 +11,8 @@ import (
 )
 
 // defaultRoundTripperProvider returns a per-auth HTTP RoundTripper based on
-// the Auth.ProxyURL value. It caches transports per proxy URL string.
+// proxy and source IPv6 settings. Both values are part of the cache key so
+// accounts cannot accidentally reuse another account's local source binding.
 type defaultRoundTripperProvider struct {
 	mu    sync.RWMutex
 	cache map[string]http.RoundTripper
@@ -27,16 +28,18 @@ func (p *defaultRoundTripperProvider) RoundTripperFor(auth *coreauth.Auth) http.
 		return nil
 	}
 	proxyStr := strings.TrimSpace(auth.ProxyURL)
-	if proxyStr == "" {
+	sourceIP := strings.TrimSpace(auth.EgressIPv6)
+	if proxyStr == "" && sourceIP == "" {
 		return nil
 	}
+	cacheKey := proxyStr + "\x00" + sourceIP
 	p.mu.RLock()
-	rt := p.cache[proxyStr]
+	rt := p.cache[cacheKey]
 	p.mu.RUnlock()
 	if rt != nil {
 		return rt
 	}
-	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyStr)
+	transport, _, errBuild := proxyutil.BuildHTTPTransportWithOptions(proxyStr, proxyutil.Options{SourceIP: sourceIP})
 	if errBuild != nil {
 		log.Errorf("%v", errBuild)
 		return nil
@@ -45,7 +48,7 @@ func (p *defaultRoundTripperProvider) RoundTripperFor(auth *coreauth.Auth) http.
 		return nil
 	}
 	p.mu.Lock()
-	p.cache[proxyStr] = transport
+	p.cache[cacheKey] = transport
 	p.mu.Unlock()
 	return transport
 }

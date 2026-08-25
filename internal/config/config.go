@@ -4,9 +4,16 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import "github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
+
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
 	SDKConfig `yaml:",inline"`
+
+	// IPv6Egress controls optional per-account source IPv6 allocation.
+	// The feature is disabled by default so existing deployments keep their
+	// historical outbound behavior until the network is explicitly prepared.
+	IPv6Egress egress.Config `yaml:"ipv6-egress,omitempty" json:"ipv6-egress,omitempty"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`

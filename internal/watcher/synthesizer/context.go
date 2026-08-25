@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -32,4 +33,7 @@ type SynthesisContext struct {
 	IDGenerator *StableIDGenerator
 	// PluginAuthParser parses plugin-owned auth files
 	PluginAuthParser PluginAuthParser
+	// EgressAllocator resolves stable per-account source IPv6 addresses.
+	// It is optional so existing synthesizer callers and tests retain legacy behavior.
+	EgressAllocator *egress.Allocator
 }

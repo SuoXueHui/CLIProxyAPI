@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -87,6 +88,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	if cfg.IPv6Egress.Enabled {
+		if _, errEgress := egress.NewAllocator(cfg.IPv6Egress); errEgress != nil {
+			return nil, fmt.Errorf("invalid ipv6-egress configuration: %w", errEgress)
+		}
 	}
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()

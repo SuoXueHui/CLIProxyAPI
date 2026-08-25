@@ -54,17 +54,27 @@ func (b *closeConnectionBody) Close() error {
 	return b.err
 }
 
-func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
+func newUtlsRoundTripper(proxyURL string, sourceIPs ...string) *utlsRoundTripper {
+	sourceIP := firstSourceIP(sourceIPs)
 	var dialer proxy.Dialer = proxy.Direct
-	if proxyURL != "" {
-		proxyDialer, mode, errBuild := proxyutil.BuildDialer(proxyURL)
+	if proxyURL != "" || sourceIP != "" {
+		proxyDialer, mode, errBuild := proxyutil.BuildDialerWithOptions(proxyURL, proxyutil.Options{SourceIP: sourceIP})
 		if errBuild != nil {
-			log.Errorf("utls: failed to configure proxy dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
+			log.Errorf("utls: failed to configure proxy/source dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
 		} else if mode != proxyutil.ModeInherit && proxyDialer != nil {
+			dialer = proxyDialer
+		} else if sourceIP != "" && proxyDialer != nil {
 			dialer = proxyDialer
 		}
 	}
 	return &utlsRoundTripper{dialer: dialer}
+}
+
+func firstSourceIP(sourceIPs []string) string {
+	if len(sourceIPs) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(sourceIPs[0])
 }
 
 func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*http2.ClientConn, error) {
@@ -282,22 +292,27 @@ func claudeCodeRequestHeaderOrder(_, requestTarget string) []string {
 	return claudeCodeMessagesHeaderOrder
 }
 
-func cachedClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
-	return claudeCodeRoundTripperCache.GetOrAdd(proxyURL, func() http.RoundTripper {
-		return newClaudeCodeRoundTripper(proxyURL)
+func cachedClaudeCodeRoundTripper(proxyURL string, sourceIPs ...string) http.RoundTripper {
+	sourceIP := firstSourceIP(sourceIPs)
+	cacheKey := proxyURL + "\x00" + sourceIP
+	return claudeCodeRoundTripperCache.GetOrAdd(cacheKey, func() http.RoundTripper {
+		return newClaudeCodeRoundTripper(proxyURL, sourceIP)
 	})
 }
 
-func newClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
+func newClaudeCodeRoundTripper(proxyURL string, sourceIPs ...string) http.RoundTripper {
+	sourceIP := firstSourceIP(sourceIPs)
 	// The cache is scoped to this round tripper, which is already keyed by proxy,
 	// so resumption never crosses proxy boundaries.
 	sessionCache := tls.NewLRUClientSessionCache(claudeCodeSessionCacheCapacity)
 	var dialer proxy.Dialer = proxy.Direct
-	if proxyURL != "" {
-		proxyDialer, mode, errBuild := proxyutil.BuildDialer(proxyURL)
+	if proxyURL != "" || sourceIP != "" {
+		proxyDialer, mode, errBuild := proxyutil.BuildDialerWithOptions(proxyURL, proxyutil.Options{SourceIP: sourceIP})
 		if errBuild != nil {
-			log.Errorf("claude tls: failed to configure proxy dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
+			log.Errorf("claude tls: failed to configure proxy/source dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
 		} else if mode != proxyutil.ModeInherit && proxyDialer != nil {
+			dialer = proxyDialer
+		} else if sourceIP != "" && proxyDialer != nil {
 			dialer = proxyDialer
 		}
 	}
@@ -368,8 +383,10 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // fallback for other hosts.
 func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	var proxyURL string
+	var sourceIP string
 	if auth != nil {
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
+		sourceIP = strings.TrimSpace(auth.EgressIPv6)
 	}
 	if proxyURL == "" && cfg != nil {
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
@@ -380,11 +397,11 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
-	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
+	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL, sourceIP)
+	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL, sourceIP)
 	var standardTransport http.RoundTripper = http.DefaultTransport
-	if proxyURL != "" {
-		if transport := buildProxyTransport(proxyURL); transport != nil {
+	if proxyURL != "" || sourceIP != "" {
+		if transport := buildProxyTransport(proxyURL, sourceIP); transport != nil {
 			standardTransport = transport
 		}
 	} else if ctxRoundTripper != nil {

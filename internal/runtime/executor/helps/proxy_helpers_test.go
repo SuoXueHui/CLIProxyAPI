@@ -28,3 +28,22 @@ func TestNewProxyAwareHTTPClientDirectBypassesGlobalProxy(t *testing.T) {
 		t.Fatal("expected direct transport to disable proxy function")
 	}
 }
+
+func TestNewProxyAwareHTTPClientSourceIPv6BuildsBoundTransport(t *testing.T) {
+	t.Parallel()
+
+	client := NewProxyAwareHTTPClient(
+		context.Background(),
+		nil,
+		&cliproxyauth.Auth{EgressIPv6: "2001:db8::10"},
+		0,
+	)
+
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("expected source-bound transport to provide DialContext")
+	}
+}

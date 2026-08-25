@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -14,6 +15,38 @@ func TestNewConfigSynthesizer(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	if synth == nil {
 		t.Fatal("expected non-nil synthesizer")
+	}
+}
+
+func TestConfigSynthesizerAssignsStableIPv6Egress(t *testing.T) {
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			IPv6Egress: egress.Config{Enabled: true, Prefix: "2001:db8:abcd::/120"},
+			GeminiKey:  []config.GeminiKey{{APIKey: "stable-key"}},
+		},
+		Now:         time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths, err := NewConfigSynthesizer().Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 1 || auths[0].EgressIPv6 == "" {
+		t.Fatalf("expected one auth with egress IPv6, got %#v", auths)
+	}
+	first := auths[0].EgressIPv6
+
+	ctx2 := &SynthesisContext{
+		Config:      ctx.Config,
+		Now:         ctx.Now,
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths2, err := NewConfigSynthesizer().Synthesize(ctx2)
+	if err != nil {
+		t.Fatalf("second Synthesize() error = %v", err)
+	}
+	if len(auths2) != 1 || auths2[0].EgressIPv6 != first {
+		t.Fatalf("egress IPv6 changed across synthesis: %q -> %#v", first, auths2)
 	}
 }
 

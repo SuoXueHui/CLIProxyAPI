@@ -69,6 +69,9 @@ type Auth struct {
 	Unavailable bool `json:"unavailable"`
 	// ProxyURL overrides the global proxy setting for this auth if provided.
 	ProxyURL string `json:"proxy_url,omitempty"`
+	// EgressIPv6 is the optional local IPv6 source address used for this auth's
+	// outbound connections. It is runtime-resolved from ipv6-egress config.
+	EgressIPv6 string `json:"egress_ipv6,omitempty"`
 	// Attributes stores provider specific metadata needed by executors (immutable configuration).
 	Attributes map[string]string `json:"attributes,omitempty"`
 	// Metadata stores runtime mutable provider state (e.g. tokens, cookies).
