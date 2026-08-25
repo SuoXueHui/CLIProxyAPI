@@ -501,6 +501,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account"] = account
 		}
 	}
+	// Expose the runtime-only IPv6 source binding for the credential detail view.
+	// Do not persist this value into the OAuth file or include an empty field.
+	if egressIPv6 := strings.TrimSpace(auth.EgressIPv6); egressIPv6 != "" {
+		entry["egress_ipv6"] = egressIPv6
+	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
 	}

@@ -280,6 +280,7 @@ func (m authTabModel) renderDetail(f map[string]any) string {
 		{"Prefix", "prefix", true},
 		{"Proxy URL", "proxy_url", true},
 		{"Priority", "priority", true},
+		{"Egress IPv6", "egress_ipv6", false},
 		{"Project ID", "project_id", false},
 		{"Disabled", "disabled", false},
 		{"Created", "created_at", false},
