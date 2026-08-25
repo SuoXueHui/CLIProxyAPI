@@ -150,7 +150,7 @@ func EnsureAddress(cfg Config, ip net.IP) error {
 	}
 	iface := strings.TrimSpace(cfg.Interface)
 	if iface == "" {
-		iface = "eth0"
+		iface = interfaceForPrefix(network)
 	}
 	prefixBits, _ := network.Mask.Size()
 	address := ip.String() + "/" + strconv.Itoa(prefixBits)
@@ -162,6 +162,36 @@ func EnsureAddress(cfg Config, ip net.IP) error {
 		return fmt.Errorf("add IPv6 egress address %s on %s: %w (%s)", ip, iface, errRun, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// interfaceForPrefix finds the interface that already owns an address inside
+// the configured Docker IPv6 network. Compose can attach networks in an order
+// that makes the IPv6 bridge eth1 (or another name), so hard-coding eth0 would
+// fail even though the route and capability are correct.
+func interfaceForPrefix(network *net.IPNet) string {
+	if network != nil {
+		if interfaces, errInterfaces := net.Interfaces(); errInterfaces == nil {
+			for _, iface := range interfaces {
+				addresses, errAddrs := iface.Addrs()
+				if errAddrs != nil {
+					continue
+				}
+				for _, address := range addresses {
+					var ip net.IP
+					switch value := address.(type) {
+					case *net.IPNet:
+						ip = value.IP
+					case *net.IPAddr:
+						ip = value.IP
+					}
+					if ip != nil && ip.To4() == nil && network.Contains(ip) {
+						return iface.Name
+					}
+				}
+			}
+		}
+	}
+	return "eth0"
 }
 
 // Enabled reports whether this allocator can assign addresses.
