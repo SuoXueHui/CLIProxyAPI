@@ -3,9 +3,12 @@ package helps
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
+
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type utlsClientRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -41,5 +44,27 @@ func TestNewUtlsHTTPClientUsesContextRoundTripperForProtectedHost(t *testing.T) 
 	}
 	if !called {
 		t.Fatal("expected context RoundTripper to handle protected host request")
+	}
+}
+
+func TestNewUtlsHTTPClientSourceIPv6UsesBoundDialer(t *testing.T) {
+	t.Parallel()
+
+	client := NewUtlsHTTPClient(context.Background(), nil, &cliproxyauth.Auth{EgressIPv6: "2001:db8::10"}, 0)
+	fallback, ok := client.Transport.(*fallbackRoundTripper)
+	if !ok {
+		t.Fatalf("transport type = %T, want *fallbackRoundTripper", client.Transport)
+	}
+	utlsRT, ok := fallback.utls.(*utlsRoundTripper)
+	if !ok {
+		t.Fatalf("uTLS round tripper type = %T, want *utlsRoundTripper", fallback.utls)
+	}
+	netDialer, ok := utlsRT.dialer.(*net.Dialer)
+	if !ok {
+		t.Fatalf("uTLS dialer type = %T, want *net.Dialer", utlsRT.dialer)
+	}
+	localAddr, ok := netDialer.LocalAddr.(*net.TCPAddr)
+	if !ok || localAddr == nil || !localAddr.IP.Equal(net.ParseIP("2001:db8::10")) {
+		t.Fatalf("uTLS local address = %#v, want 2001:db8::10", netDialer.LocalAddr)
 	}
 }

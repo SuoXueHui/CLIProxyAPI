@@ -26,13 +26,16 @@ type utlsRoundTripper struct {
 	dialer      proxy.Dialer
 }
 
-func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
+func newUtlsRoundTripper(proxyURL, sourceIP string) *utlsRoundTripper {
 	var dialer proxy.Dialer = proxy.Direct
-	if proxyURL != "" {
-		proxyDialer, mode, errBuild := proxyutil.BuildDialer(proxyURL)
+	if proxyURL != "" || sourceIP != "" {
+		proxyDialer, mode, errBuild := proxyutil.BuildDialerWithOptions(proxyURL, proxyutil.Options{SourceIP: sourceIP})
 		if errBuild != nil {
-			log.Errorf("utls: failed to configure proxy dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
+			log.Errorf("utls: failed to configure proxy/source dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
 		} else if mode != proxyutil.ModeInherit && proxyDialer != nil {
+			dialer = proxyDialer
+		} else if sourceIP != "" && proxyDialer != nil {
+			// A source-only configuration is represented as ModeInherit by proxyutil.
 			dialer = proxyDialer
 		}
 	}
@@ -157,8 +160,10 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // Falls back to standard transport for non-HTTPS requests.
 func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	var proxyURL string
+	var sourceIP string
 	if auth != nil {
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
+		sourceIP = strings.TrimSpace(auth.EgressIPv6)
 	}
 	if proxyURL == "" && cfg != nil {
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
@@ -169,10 +174,10 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var utlsRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	var utlsRT http.RoundTripper = newUtlsRoundTripper(proxyURL, sourceIP)
 	var standardTransport http.RoundTripper = http.DefaultTransport
-	if proxyURL != "" {
-		if transport := buildProxyTransport(proxyURL); transport != nil {
+	if proxyURL != "" || sourceIP != "" {
+		if transport := buildProxyTransport(proxyURL, sourceIP); transport != nil {
 			standardTransport = transport
 		}
 	} else if ctxRoundTripper != nil {

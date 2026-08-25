@@ -14,6 +14,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -513,6 +514,15 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	}
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
+	var egressAllocator *egress.Allocator
+	if cfg.IPv6Egress.Enabled {
+		var errEgress error
+		egressAllocator, errEgress = egress.NewAllocator(cfg.IPv6Egress)
+		if errEgress != nil {
+			log.Errorf("invalid ipv6-egress configuration while applying auth updates: %v", errEgress)
+			return
+		}
+	}
 	tasks := make([]modelRegistrationTask, 0, len(updates))
 	needsPluginSync := false
 	needsAliasRebuild := false
@@ -521,6 +531,19 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 		case watcher.AuthUpdateActionAdd, watcher.AuthUpdateActionModify:
 			if update.Auth == nil || update.Auth.ID == "" {
 				continue
+			}
+			if egressAllocator != nil && egressAllocator.Enabled() {
+				if ip, errResolve := egressAllocator.Resolve(update.Auth.ID); errResolve != nil {
+					log.Errorf("failed to resolve IPv6 egress for auth %q: %v", update.Auth.ID, errResolve)
+					continue
+				} else if ip != nil {
+					if errEnsure := egress.EnsureAddress(cfg.IPv6Egress, ip); errEnsure != nil {
+						log.Errorf("failed to add IPv6 egress address for auth %q: %v", update.Auth.ID, errEnsure)
+						continue
+					}
+					update.Auth = update.Auth.Clone()
+					update.Auth.EgressIPv6 = ip.String()
+				}
 			}
 			auth := s.prepareCoreAuthForModelRegistration(registrationCtx, update.Auth)
 			if auth == nil {
@@ -1379,6 +1402,15 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		log.Warnf("failed to synthesize config API key auths: %v", errSynthesize)
 		return
 	}
+	var egressAllocator *egress.Allocator
+	if cfg.IPv6Egress.Enabled {
+		var errEgress error
+		egressAllocator, errEgress = egress.NewAllocator(cfg.IPv6Egress)
+		if errEgress != nil {
+			log.Errorf("invalid ipv6-egress configuration while registering API keys: %v", errEgress)
+			return
+		}
+	}
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
 	tasks := make([]modelRegistrationTask, 0, len(auths))
@@ -1386,6 +1418,18 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 	for _, auth := range auths {
 		if !coreauth.IsConfigAPIKeyAuth(auth) {
 			continue
+		}
+		if egressAllocator != nil && egressAllocator.Enabled() {
+			if ip, errResolve := egressAllocator.Resolve(auth.ID); errResolve != nil {
+				log.Errorf("failed to resolve IPv6 egress for auth %q: %v", auth.ID, errResolve)
+				continue
+			} else if ip != nil {
+				if errEnsure := egress.EnsureAddress(cfg.IPv6Egress, ip); errEnsure != nil {
+					log.Errorf("failed to add IPv6 egress address for auth %q: %v", auth.ID, errEnsure)
+					continue
+				}
+				auth.EgressIPv6 = ip.String()
+			}
 		}
 		prepared := s.prepareCoreAuthForModelRegistration(registrationCtx, auth)
 		if prepared == nil {

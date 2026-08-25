@@ -2,6 +2,7 @@ package proxyutil
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -11,6 +12,15 @@ import (
 	"testing"
 	"time"
 )
+
+func listenIPv6(t *testing.T) net.Listener {
+	t.Helper()
+	listener, errListen := net.Listen("tcp6", "[::1]:0")
+	if errListen != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", errListen)
+	}
+	return listener
+}
 
 func mustDefaultTransport(t *testing.T) *http.Transport {
 	t.Helper()
@@ -75,6 +85,95 @@ func TestBuildHTTPTransportDirectBypassesProxy(t *testing.T) {
 	}
 	if transport.Proxy != nil {
 		t.Fatal("expected direct transport to disable proxy function")
+	}
+}
+
+func TestBuildHTTPTransportWithOptionsValidatesSourceIPv6(t *testing.T) {
+	t.Parallel()
+
+	if _, _, errBuild := BuildHTTPTransportWithOptions("direct", Options{SourceIP: "not-an-ip"}); errBuild == nil {
+		t.Fatal("expected malformed source IP to fail")
+	}
+	if _, _, errBuild := BuildHTTPTransportWithOptions("direct", Options{SourceIP: "192.0.2.10"}); errBuild == nil {
+		t.Fatal("expected IPv4 source IP to fail")
+	}
+	transport, mode, errBuild := BuildHTTPTransportWithOptions("direct", Options{SourceIP: "::1"})
+	if errBuild != nil {
+		t.Fatalf("BuildHTTPTransportWithOptions returned error: %v", errBuild)
+	}
+	if mode != ModeDirect || transport == nil || transport.DialContext == nil {
+		t.Fatalf("mode=%d transport=%v dialContext=%v, want direct transport with dialer", mode, transport != nil, transport != nil && transport.DialContext != nil)
+	}
+	if _, _, errBuild := BuildDialerWithOptions("direct", Options{SourceIP: "not-an-ip"}); errBuild == nil {
+		t.Fatal("expected malformed source IP to fail for connection dialer")
+	}
+}
+
+func TestBuildHTTPTransportWithOptionsSupportsHTTPSAndSOCKS5H(t *testing.T) {
+	t.Parallel()
+
+	for _, scheme := range []string{"https", "socks5h"} {
+		t.Run(scheme, func(t *testing.T) {
+			transport, mode, errBuild := BuildHTTPTransportWithOptions(scheme+"://[::1]:12345", Options{SourceIP: "::1"})
+			if errBuild != nil {
+				t.Fatalf("BuildHTTPTransportWithOptions returned error: %v", errBuild)
+			}
+			if mode != ModeProxy || transport == nil || transport.DialContext == nil {
+				t.Fatalf("mode=%d transport=%v dialContext=%v, want proxy transport with dialer", mode, transport != nil, transport != nil && transport.DialContext != nil)
+			}
+		})
+	}
+}
+
+func TestBuildHTTPTransportWithOptionsBindsHTTPProxyConnection(t *testing.T) {
+	listener := listenIPv6(t)
+	defer func() { _ = listener.Close() }()
+
+	transport, _, errBuild := BuildHTTPTransportWithOptions("http://"+listener.Addr().String(), Options{SourceIP: "::1"})
+	if errBuild != nil {
+		t.Fatalf("BuildHTTPTransportWithOptions returned error: %v", errBuild)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, errDial := transport.DialContext(ctx, "tcp", listener.Addr().String())
+	if errDial != nil {
+		t.Fatalf("transport.DialContext returned error: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+	remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok || !remote.IP.Equal(net.ParseIP("::1")) {
+		t.Fatalf("proxy peer address = %v, want IPv6 loopback", conn.RemoteAddr())
+	}
+}
+
+func TestBuildHTTPTransportWithOptionsBindsSOCKS5ProxyConnection(t *testing.T) {
+	listener := listenIPv6(t)
+	defer func() { _ = listener.Close() }()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, errAccept := listener.Accept()
+		if errAccept == nil {
+			accepted <- conn
+		}
+	}()
+
+	transport, _, errBuild := BuildHTTPTransportWithOptions("socks5://"+listener.Addr().String(), Options{SourceIP: "::1"})
+	if errBuild != nil {
+		t.Fatalf("BuildHTTPTransportWithOptions returned error: %v", errBuild)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _ = transport.DialContext(ctx, "tcp", "target.example:443")
+	select {
+	case conn := <-accepted:
+		defer func() { _ = conn.Close() }()
+		remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if !ok || !remote.IP.Equal(net.ParseIP("::1")) {
+			t.Fatalf("SOCKS peer address = %v, want IPv6 loopback", conn.RemoteAddr())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS proxy did not receive a connection")
 	}
 }
 
@@ -266,6 +365,37 @@ func TestBuildDialerHTTPProxyCONNECT(t *testing.T) {
 
 	if errServer := <-done; errServer != nil {
 		t.Fatalf("proxy server returned error: %v", errServer)
+	}
+}
+
+func TestBuildDialerWithOptionsBindsHTTPConnectProxyConnection(t *testing.T) {
+	listener := listenIPv6(t)
+	defer func() { _ = listener.Close() }()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, errAccept := listener.Accept()
+		if errAccept == nil {
+			accepted <- conn
+		}
+	}()
+
+	dialer, _, errBuild := BuildDialerWithOptions("http://"+listener.Addr().String(), Options{SourceIP: "::1"})
+	if errBuild != nil {
+		t.Fatalf("BuildDialerWithOptions returned error: %v", errBuild)
+	}
+	go func() {
+		_, _ = dialer.Dial("tcp", "target.example:443")
+	}()
+	select {
+	case conn := <-accepted:
+		defer func() { _ = conn.Close() }()
+		remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if !ok || !remote.IP.Equal(net.ParseIP("::1")) {
+			t.Fatalf("CONNECT peer address = %v, want IPv6 loopback", conn.RemoteAddr())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HTTP proxy did not receive a connection")
 	}
 }
 

@@ -1068,3 +1068,12 @@ func TestNewProxyAwareWebsocketDialerDirectDisablesProxy(t *testing.T) {
 		t.Fatal("expected websocket proxy function to be nil for direct mode")
 	}
 }
+
+func TestNewProxyAwareWebsocketDialerSourceIPv6ConfiguresDialer(t *testing.T) {
+	t.Parallel()
+
+	dialer := newProxyAwareWebsocketDialer(nil, &cliproxyauth.Auth{EgressIPv6: "2001:db8::10"})
+	if dialer.NetDialContext == nil {
+		t.Fatal("expected websocket dialer to configure NetDialContext")
+	}
+}

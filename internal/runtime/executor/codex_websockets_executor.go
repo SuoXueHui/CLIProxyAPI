@@ -792,14 +792,35 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 }
 
 func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *websocket.Dialer {
+	var sourceIP string
+	if auth != nil {
+		sourceIP = strings.TrimSpace(auth.EgressIPv6)
+	}
+
+	// Keep the historical timeout/keep-alive settings while optionally binding
+	// the TCP connection used for the upstream or proxy endpoint to sourceIP.
+	baseDialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	if sourceIP != "" {
+		boundDialer, _, errBuild := proxyutil.BuildDialerWithOptions("", proxyutil.Options{SourceIP: sourceIP})
+		if errBuild != nil {
+			log.Errorf("codex websockets executor: configure source IPv6 %q failed: %v", sourceIP, errBuild)
+			// Keep the configured proxy usable when the optional source address is invalid.
+			sourceIP = ""
+		} else if netDialer, ok := boundDialer.(*net.Dialer); ok {
+			netDialer.Timeout = baseDialer.Timeout
+			netDialer.KeepAlive = baseDialer.KeepAlive
+			baseDialer = netDialer
+		}
+	}
+
 	dialer := &websocket.Dialer{
 		Proxy:             http.ProxyFromEnvironment,
 		HandshakeTimeout:  codexResponsesWebsocketHandshakeTO,
 		EnableCompression: true,
-		NetDialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		NetDialContext:    baseDialer.DialContext,
 	}
 
 	proxyURL := ""
@@ -830,6 +851,23 @@ func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *
 
 	switch setting.URL.Scheme {
 	case "socks5", "socks5h":
+		if sourceIP != "" {
+			proxyDialer, _, errBuild := proxyutil.BuildDialerWithOptions(proxyURL, proxyutil.Options{SourceIP: sourceIP})
+			if errBuild != nil {
+				log.Errorf("codex websockets executor: create source-bound SOCKS5 dialer failed: %v", errBuild)
+				return dialer
+			}
+			dialer.Proxy = nil
+			if contextDialer, ok := proxyDialer.(proxy.ContextDialer); ok {
+				dialer.NetDialContext = contextDialer.DialContext
+			} else {
+				dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+					return proxyDialer.Dial(network, addr)
+				}
+			}
+			return dialer
+		}
+
 		var proxyAuth *proxy.Auth
 		if setting.URL.User != nil {
 			username := setting.URL.User.Username()

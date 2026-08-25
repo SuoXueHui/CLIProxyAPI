@@ -33,8 +33,10 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 
 	// Priority 1: Use auth.ProxyURL if configured
 	var proxyURL string
+	var sourceIP string
 	if auth != nil {
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
+		sourceIP = strings.TrimSpace(auth.EgressIPv6)
 	}
 
 	// Priority 2: Use cfg.ProxyURL if auth proxy is not configured
@@ -42,9 +44,9 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 
-	// If we have a proxy URL configured, set up the transport
-	if proxyURL != "" {
-		transport := buildProxyTransport(proxyURL)
+	// If a proxy URL or account-specific source IPv6 is configured, set up the transport.
+	if proxyURL != "" || sourceIP != "" {
+		transport := buildProxyTransport(proxyURL, sourceIP)
 		if transport != nil {
 			httpClient.Transport = transport
 			return httpClient
@@ -61,16 +63,18 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	return httpClient
 }
 
-// buildProxyTransport creates an HTTP transport configured for the given proxy URL.
-// It supports SOCKS5, HTTP, and HTTPS proxy protocols.
+// buildProxyTransport creates an HTTP transport configured for the given proxy
+// URL and optional account-specific source IPv6 address. It supports SOCKS5,
+// HTTP, and HTTPS proxy protocols.
 //
 // Parameters:
 //   - proxyURL: The proxy URL string (e.g., "socks5://user:pass@host:port", "http://host:port")
+//   - sourceIP: Optional local IPv6 address for the connection to the upstream or proxy
 //
 // Returns:
-//   - *http.Transport: A configured transport, or nil if the proxy URL is invalid
-func buildProxyTransport(proxyURL string) *http.Transport {
-	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyURL)
+//   - *http.Transport: A configured transport, or nil if proxy/source settings are invalid
+func buildProxyTransport(proxyURL, sourceIP string) *http.Transport {
+	transport, _, errBuild := proxyutil.BuildHTTPTransportWithOptions(proxyURL, proxyutil.Options{SourceIP: sourceIP})
 	if errBuild != nil {
 		log.Errorf("%v", errBuild)
 		return nil
