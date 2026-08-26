@@ -2,6 +2,8 @@ package egress
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -167,5 +169,24 @@ func TestAllocatorConcurrentResolve(t *testing.T) {
 	}
 	if len(seen) != count {
 		t.Fatalf("assigned %d addresses, want %d", len(seen), count)
+	}
+}
+
+func TestEnsureAddressTreatsAlreadyAssignedAsSuccess(t *testing.T) {
+	dir := t.TempDir()
+	ipPath := filepath.Join(dir, "ip")
+	script := []byte("#!/bin/sh\nprintf '%s\\n' 'Error: ipv6: address already assigned' >&2\nexit 2\n")
+	if err := os.WriteFile(ipPath, script, 0o700); err != nil {
+		t.Fatalf("failed to create fake ip command: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	err := EnsureAddress(Config{
+		Enabled:   true,
+		Prefix:    "2001:db8::/120",
+		Interface: "eth0",
+	}, net.ParseIP("2001:db8::42"))
+	if err != nil {
+		t.Fatalf("EnsureAddress() error = %v, want nil for an already assigned address", err)
 	}
 }
