@@ -156,8 +156,7 @@ func EnsureAddress(cfg Config, ip net.IP) error {
 	address := ip.String() + "/" + strconv.Itoa(prefixBits)
 	cmd := exec.Command("ip", "-6", "addr", "add", address, "dev", iface)
 	if output, errRun := cmd.CombinedOutput(); errRun != nil {
-		lowerOutput := strings.ToLower(string(output))
-		if strings.Contains(lowerOutput, "file exists") || strings.Contains(lowerOutput, "address already assigned") {
+		if strings.Contains(strings.ToLower(string(output)), "file exists") {
 			return nil
 		}
 		return fmt.Errorf("add IPv6 egress address %s on %s: %w (%s)", ip, iface, errRun, strings.TrimSpace(string(output)))
