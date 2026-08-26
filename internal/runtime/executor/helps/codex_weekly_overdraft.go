@@ -8,8 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +26,7 @@ const (
 	CodexWeeklyOverdraftActionSkipped  = "skipped"
 	CodexWeeklyOverdraftActionObserved = "observed"
 	CodexWeeklyOverdraftActionInjected = "injected"
+	CodexWeeklyOverdraftActionProbe    = "probe"
 
 	CodexWeeklyOverdraftReasonDisabled        = "disabled"
 	CodexWeeklyOverdraftReasonInvalidConfig   = "invalid-config"
@@ -34,6 +37,15 @@ const (
 	CodexWeeklyOverdraftReasonUnsupportedTail = "unsupported-tail"
 	CodexWeeklyOverdraftReasonAlreadyInjected = "already-injected"
 	CodexWeeklyOverdraftReasonNonCanary       = "non-canary"
+	CodexWeeklyOverdraftReasonProbe           = "probe"
+	CodexWeeklyOverdraftReasonGateClosed      = "gate-closed"
+
+	CodexWeeklyOverdraftPayloadVersion = "core-v1"
+
+	// CodexWeeklyOverdraftProbeMetadataKey marks a Manager-owned probe. Probes
+	// reuse the normal executor/auth path but must never recursively inject the
+	// experiment payload.
+	CodexWeeklyOverdraftProbeMetadataKey = "codex_overdraft_probe"
 
 	CodexWeeklyOverdraftTailUserMessage      = "user-message"
 	CodexWeeklyOverdraftTailFunctionOutput   = "function-call-output"
@@ -57,17 +69,24 @@ type CodexWeeklyOverdraftRequest struct {
 	AuthID    string
 	SessionID string
 	OAuth     bool
-	Body      []byte
+	// Metadata carries request-local, non-secret decision context such as the
+	// manager-selected overdraft window and cycle key.
+	Metadata map[string]any
+	Body     []byte
 }
 
 // CodexWeeklyOverdraftDecision is an immutable request-local summary used for
 // outcome metrics. It intentionally exposes no auth, session, or payload data.
 type CodexWeeklyOverdraftDecision struct {
-	Action    string
-	Reason    string
-	Tail      string
-	PairCount int
-	account   *codexWeeklyOverdraftAccountMetric
+	Action         string
+	Reason         string
+	Tail           string
+	PairCount      int
+	DecisionID     string
+	PayloadVersion string
+	GateWindow     string
+	CycleKey       string
+	account        *codexWeeklyOverdraftAccountMetric
 }
 
 // ApplyCodexWeeklyOverdraftForRequest derives the stable auth/session inputs
@@ -86,6 +105,13 @@ func ApplyCodexWeeklyOverdraftForRequest(cfg *config.Config, auth *cliproxyauth.
 		// metadata wins over legacy field-shape fallbacks.
 		oauth = auth.AuthKind() == cliproxyauth.AuthKindOAuth
 	}
+	if isCodexWeeklyOverdraftProbe(req.Metadata) {
+		return body, newCodexWeeklyOverdraftDecision(req, authID, CodexWeeklyOverdraftActionProbe, CodexWeeklyOverdraftReasonProbe)
+	}
+	overdraftConfig.Normalize()
+	if !codexWeeklyOverdraftGateOpen(overdraftConfig, authID, req.Metadata) {
+		return body, CodexWeeklyOverdraftDecision{Action: CodexWeeklyOverdraftActionSkipped, Reason: CodexWeeklyOverdraftReasonGateClosed}
+	}
 
 	sessionID := ProviderSessionUUID("codex", req.Metadata)
 	if sessionID == "" {
@@ -96,8 +122,97 @@ func ApplyCodexWeeklyOverdraftForRequest(cfg *config.Config, auth *cliproxyauth.
 		AuthID:    authID,
 		SessionID: sessionID,
 		OAuth:     oauth,
+		Metadata:  req.Metadata,
 		Body:      body,
 	})
+}
+
+type codexWeeklyOverdraftGateEvidence struct {
+	openedAt time.Time
+}
+
+var codexWeeklyOverdraftGates sync.Map
+
+func codexWeeklyOverdraftGateOpen(cfg config.CodexWeeklyOverdraftConfig, authID string, metadata map[string]any) bool {
+	if strings.TrimSpace(cfg.GateMode) == "" || cfg.GateMode == config.CodexWeeklyOverdraftGateModeOff {
+		return true
+	}
+	key := strings.TrimSpace(authID) + "\x00" + codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_window")
+	value, ok := codexWeeklyOverdraftGates.Load(key)
+	if !ok {
+		return false
+	}
+	return time.Since(value.(codexWeeklyOverdraftGateEvidence).openedAt) < 6*time.Hour
+}
+
+// RecordCodexWeeklyOverdraftQuotaEvidence opens the local gate only for a
+// verified quota signal. It is intentionally conservative and ignores generic
+// 429s, transport failures, and arbitrary response text.
+func RecordCodexWeeklyOverdraftQuotaEvidence(authID, window string, status int, headers http.Header, body []byte) {
+	RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold(authID, window, 95, status, headers, body)
+}
+
+// RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold is the configurable
+// variant used by the executor. The legacy wrapper above keeps tests and
+// internal callers source-compatible with the original conservative threshold.
+func RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold(authID, window string, threshold, status int, headers http.Header, body []byte) {
+	if strings.TrimSpace(authID) == "" || status != 429 || !codexWeeklyOverdraftQuotaSignal(headers, body, threshold) {
+		return
+	}
+	key := strings.TrimSpace(authID) + "\x00" + normalizeCodexOverdraftWindow(window)
+	codexWeeklyOverdraftGates.Store(key, codexWeeklyOverdraftGateEvidence{openedAt: time.Now()})
+}
+
+func codexWeeklyOverdraftQuotaSignal(headers http.Header, body []byte, threshold int) bool {
+	if threshold < 1 || threshold > 100 {
+		threshold = 95
+	}
+	text := strings.ToLower(string(body))
+	for _, marker := range []string{"usage_limit_reached", "quota_exceeded", "rate_limit_reached", "usage limit reached", "quota exceeded"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	for name, values := range headers {
+		lowerName := strings.ToLower(name)
+		if !strings.Contains(lowerName, "quota") && !strings.Contains(lowerName, "rate-limit") {
+			continue
+		}
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			value = strings.TrimSuffix(value, "%")
+			if percent, errParse := strconv.Atoi(value); errParse == nil && percent >= threshold && percent <= 100 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeCodexOverdraftWindow(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "5h", "five_hour", "five-hour":
+		return "5h"
+	case "7d", "weekly", "seven_day", "seven-day":
+		return "7d"
+	default:
+		return "unknown"
+	}
+}
+
+func isCodexWeeklyOverdraftProbe(metadata map[string]any) bool {
+	if metadata == nil {
+		return false
+	}
+	value := metadata[CodexWeeklyOverdraftProbeMetadataKey]
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
 }
 
 type codexWeeklyOverdraftCall struct {
@@ -161,8 +276,12 @@ func ApplyCodexWeeklyOverdraft(req CodexWeeklyOverdraftRequest) ([]byte, CodexWe
 	}
 
 	decision := CodexWeeklyOverdraftDecision{
-		Tail:      tail,
-		PairCount: cfg.PairCount,
+		Tail:           tail,
+		PairCount:      cfg.PairCount,
+		DecisionID:     codexWeeklyOverdraftDecisionID(authID, req.SessionID, req.Body),
+		PayloadVersion: CodexWeeklyOverdraftPayloadVersion,
+		GateWindow:     codexWeeklyOverdraftMetadata(req.Metadata, "codex_overdraft_window"),
+		CycleKey:       codexWeeklyOverdraftMetadata(req.Metadata, "codex_overdraft_cycle_key"),
 	}
 	if cfg.Mode == config.CodexWeeklyOverdraftModeObserve {
 		decision.Action = CodexWeeklyOverdraftActionObserved
@@ -179,6 +298,51 @@ func ApplyCodexWeeklyOverdraft(req CodexWeeklyOverdraftRequest) ([]byte, CodexWe
 	codexWeeklyOverdraftMetrics.injected.Add(1)
 	decision.account = codexWeeklyOverdraftMetrics.accounts.track(authID, decision.Action, time.Now().UTC())
 	return updated, decision
+}
+
+func newCodexWeeklyOverdraftDecision(req cliproxyexecutor.Request, authID, action, reason string) CodexWeeklyOverdraftDecision {
+	return CodexWeeklyOverdraftDecision{
+		Action:         action,
+		Reason:         reason,
+		DecisionID:     codexWeeklyOverdraftDecisionID(authID, ProviderSessionUUID("codex", req.Metadata), req.Payload),
+		PayloadVersion: CodexWeeklyOverdraftPayloadVersion,
+		GateWindow:     codexWeeklyOverdraftMetadata(req.Metadata, "codex_overdraft_window"),
+		CycleKey:       codexWeeklyOverdraftMetadata(req.Metadata, "codex_overdraft_cycle_key"),
+	}
+}
+
+func codexWeeklyOverdraftMetadata(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return "unknown"
+	}
+	value := strings.TrimSpace(stringValue(metadata[key]))
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func stringValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []byte:
+		return string(typed)
+	default:
+		return ""
+	}
+}
+
+func codexWeeklyOverdraftDecisionID(authID, sessionID string, body []byte) string {
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte("cli-proxy-api:codex-weekly-overdraft-decision:v1"))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(strings.TrimSpace(authID)))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(strings.TrimSpace(sessionID)))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write(body)
+	return "od_" + hex.EncodeToString(hasher.Sum(nil)[:16])
 }
 
 func codexWeeklyOverdraftSkip(body []byte, reason string) ([]byte, CodexWeeklyOverdraftDecision) {

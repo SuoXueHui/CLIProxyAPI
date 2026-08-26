@@ -84,6 +84,7 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 
 type codexIdentityConfuseState struct {
 	enabled                bool
+	accountDeviceIdentity  bool
 	authID                 string
 	originalPromptCacheKey string
 	promptCacheKey         string
@@ -155,18 +156,34 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 }
 
 func applyCodexIdentityConfuseBody(cfg *config.Config, auth *cliproxyauth.Auth, userPayload []byte, rawJSON []byte) ([]byte, codexIdentityConfuseState) {
-	if !codexIdentityConfuseEnabled(cfg) || auth == nil || strings.TrimSpace(auth.ID) == "" || len(rawJSON) == 0 {
+	accountDeviceIdentityEnabled := codexAccountDeviceIdentityEnabled(cfg, auth)
+	identityConfuseEnabled := codexIdentityConfuseEnabled(cfg)
+	if (!identityConfuseEnabled && !accountDeviceIdentityEnabled) || auth == nil || strings.TrimSpace(auth.ID) == "" || len(rawJSON) == 0 {
 		return rawJSON, codexIdentityConfuseState{}
 	}
 
-	state := codexIdentityConfuseState{enabled: true, authID: strings.TrimSpace(auth.ID)}
+	state := codexIdentityConfuseState{
+		enabled:               identityConfuseEnabled,
+		accountDeviceIdentity: accountDeviceIdentityEnabled,
+		authID:                strings.TrimSpace(auth.ID),
+	}
+	if accountDeviceIdentityEnabled {
+		if updated, applied := applyCodexAccountDeviceIdentityBody(cfg, auth, rawJSON); applied {
+			rawJSON = updated
+		}
+	}
+	if !identityConfuseEnabled {
+		return rawJSON, state
+	}
 	if promptCacheKey := strings.TrimSpace(gjson.GetBytes(userPayload, "prompt_cache_key").String()); promptCacheKey != "" {
 		state.originalPromptCacheKey = promptCacheKey
 		state.promptCacheKey = codexIdentityConfuseUUID(auth.ID, "prompt-cache", promptCacheKey)
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", state.promptCacheKey)
 	}
-	if installationID := strings.TrimSpace(gjson.GetBytes(userPayload, "client_metadata.x-codex-installation-id").String()); installationID != "" {
-		rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-installation-id", codexIdentityConfuseUUID(auth.ID, "installation", installationID))
+	if !accountDeviceIdentityEnabled {
+		if installationID := strings.TrimSpace(gjson.GetBytes(userPayload, "client_metadata.x-codex-installation-id").String()); installationID != "" {
+			rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-installation-id", codexIdentityConfuseUUID(auth.ID, "installation", installationID))
+		}
 	}
 	if turnMetadata := strings.TrimSpace(gjson.GetBytes(rawJSON, "client_metadata.x-codex-turn-metadata").String()); turnMetadata != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-turn-metadata", applyCodexTurnMetadataIdentityConfuse(turnMetadata, &state))

@@ -32,6 +32,19 @@ type Record struct {
 	AccessTokenSHA256 string
 	AuthType          string
 	Source            string
+	// OverdraftAction identifies the local Codex overdraft path used for this request.
+	// It is optional so legacy providers and callers remain source compatible.
+	OverdraftAction string
+	// OverdraftReason contains a sanitized local decision reason, never request content.
+	OverdraftReason string
+	// OverdraftDecisionID is a deterministic, non-secret identifier for one decision.
+	OverdraftDecisionID string
+	// OverdraftPayloadVersion identifies the local transform contract.
+	OverdraftPayloadVersion string
+	// OverdraftGateWindow identifies the quota window when known (5h/7d).
+	OverdraftGateWindow string
+	// OverdraftCycleKey identifies the quota reset cycle when supplied by the caller.
+	OverdraftCycleKey string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier.

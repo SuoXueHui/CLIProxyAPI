@@ -11,6 +11,8 @@ const (
 
 	CodexWeeklyOverdraftTailUserOnly          = "user-only"
 	CodexWeeklyOverdraftTailUserAndToolOutput = "user-and-tool-output"
+	CodexWeeklyOverdraftGateModeOff           = "off"
+	CodexWeeklyOverdraftGateModeHeaderOr429   = "header-or-429"
 
 	defaultCodexWeeklyOverdraftCanaryPercent = 10
 	defaultCodexWeeklyOverdraftPairCount     = 1
@@ -21,25 +23,29 @@ const (
 // CodexWeeklyOverdraftConfig controls the experimental request transform used to
 // test limited Codex generation after a five-hour or seven-day quota is exhausted.
 type CodexWeeklyOverdraftConfig struct {
-	Enabled       bool   `yaml:"enabled" json:"enabled"`
-	Mode          string `yaml:"mode" json:"mode"`
-	CanaryPercent int    `yaml:"canary-percent" json:"canary-percent"`
-	PairCount     int    `yaml:"pair-count" json:"pair-count"`
-	TailPolicy    string `yaml:"tail-policy" json:"tail-policy"`
-	OAuthOnly     bool   `yaml:"oauth-only" json:"oauth-only"`
-	MaxBodyBytes  int    `yaml:"max-body-bytes" json:"max-body-bytes"`
+	Enabled               bool   `yaml:"enabled" json:"enabled"`
+	Mode                  string `yaml:"mode" json:"mode"`
+	CanaryPercent         int    `yaml:"canary-percent" json:"canary-percent"`
+	PairCount             int    `yaml:"pair-count" json:"pair-count"`
+	TailPolicy            string `yaml:"tail-policy" json:"tail-policy"`
+	OAuthOnly             bool   `yaml:"oauth-only" json:"oauth-only"`
+	MaxBodyBytes          int    `yaml:"max-body-bytes" json:"max-body-bytes"`
+	GateMode              string `yaml:"gate-mode" json:"gate-mode"`
+	QuotaThresholdPercent int    `yaml:"quota-threshold-percent" json:"quota-threshold-percent"`
 }
 
 // DefaultCodexWeeklyOverdraftConfig returns conservative defaults. The feature
 // remains disabled until an operator explicitly enables it.
 func DefaultCodexWeeklyOverdraftConfig() CodexWeeklyOverdraftConfig {
 	return CodexWeeklyOverdraftConfig{
-		Mode:          CodexWeeklyOverdraftModeObserve,
-		CanaryPercent: defaultCodexWeeklyOverdraftCanaryPercent,
-		PairCount:     defaultCodexWeeklyOverdraftPairCount,
-		TailPolicy:    CodexWeeklyOverdraftTailUserAndToolOutput,
-		OAuthOnly:     true,
-		MaxBodyBytes:  defaultCodexWeeklyOverdraftMaxBodyBytes,
+		Mode:                  CodexWeeklyOverdraftModeObserve,
+		CanaryPercent:         defaultCodexWeeklyOverdraftCanaryPercent,
+		PairCount:             defaultCodexWeeklyOverdraftPairCount,
+		TailPolicy:            CodexWeeklyOverdraftTailUserAndToolOutput,
+		OAuthOnly:             true,
+		MaxBodyBytes:          defaultCodexWeeklyOverdraftMaxBodyBytes,
+		GateMode:              CodexWeeklyOverdraftGateModeOff,
+		QuotaThresholdPercent: 95,
 	}
 }
 
@@ -55,6 +61,7 @@ func (c *CodexWeeklyOverdraftConfig) Normalize() {
 	}
 	c.Mode = strings.ToLower(strings.TrimSpace(c.Mode))
 	c.TailPolicy = strings.ToLower(strings.TrimSpace(c.TailPolicy))
+	c.GateMode = strings.ToLower(strings.TrimSpace(c.GateMode))
 }
 
 // Validate rejects configurations that could silently broaden the experiment.
@@ -79,6 +86,12 @@ func (c CodexWeeklyOverdraftConfig) Validate() error {
 	}
 	if c.MaxBodyBytes < 1 || c.MaxBodyBytes > maxCodexWeeklyOverdraftBodyBytes {
 		return fmt.Errorf("codex.weekly-overdraft.max-body-bytes must be between 1 and %d", maxCodexWeeklyOverdraftBodyBytes)
+	}
+	if c.GateMode != CodexWeeklyOverdraftGateModeOff && c.GateMode != CodexWeeklyOverdraftGateModeHeaderOr429 {
+		return fmt.Errorf("codex.weekly-overdraft.gate-mode must be %q or %q", CodexWeeklyOverdraftGateModeOff, CodexWeeklyOverdraftGateModeHeaderOr429)
+	}
+	if c.QuotaThresholdPercent < 1 || c.QuotaThresholdPercent > 100 {
+		return fmt.Errorf("codex.weekly-overdraft.quota-threshold-percent must be between 1 and 100")
 	}
 	return nil
 }

@@ -89,6 +89,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		LatencyMs:       record.Latency.Milliseconds(),
 		TTFTMs:          record.TTFT.Milliseconds(),
 		Source:          record.Source,
+		AuthID:          record.AuthID,
 		AuthIndex:       record.AuthIndex,
 		AccessTokenHash: record.AccessTokenSHA256,
 		ClientIP:        clientRequestMetadata.ClientIP,
@@ -102,20 +103,26 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
-		requestDetail:       detail,
-		AccountingVersion:   coreusage.TokenAccountingSchemaVersion,
-		TokenBreakdown:      usageDetail.TokenBreakdown,
-		Provider:            provider,
-		ExecutorType:        executorType,
-		Model:               modelName,
-		Alias:               aliasName,
-		Endpoint:            resolveEndpoint(ctx),
-		AuthType:            authType,
-		APIKey:              apiKey,
-		RequestID:           requestID,
-		ReasoningEffort:     reasoningEffort,
-		ServiceTier:         serviceTier,
-		ResponseServiceTier: responseServiceTier,
+		requestDetail:           detail,
+		AccountingVersion:       coreusage.TokenAccountingSchemaVersion,
+		TokenBreakdown:          usageDetail.TokenBreakdown,
+		Provider:                provider,
+		ExecutorType:            executorType,
+		Model:                   modelName,
+		Alias:                   aliasName,
+		Endpoint:                resolveEndpoint(ctx),
+		AuthType:                authType,
+		APIKey:                  apiKey,
+		RequestID:               requestID,
+		ReasoningEffort:         reasoningEffort,
+		OverdraftAction:         strings.TrimSpace(record.OverdraftAction),
+		OverdraftReason:         strings.TrimSpace(record.OverdraftReason),
+		OverdraftDecisionID:     strings.TrimSpace(record.OverdraftDecisionID),
+		OverdraftPayloadVersion: strings.TrimSpace(record.OverdraftPayloadVersion),
+		OverdraftGateWindow:     strings.TrimSpace(record.OverdraftGateWindow),
+		OverdraftCycleKey:       strings.TrimSpace(record.OverdraftCycleKey),
+		ServiceTier:             serviceTier,
+		ResponseServiceTier:     responseServiceTier,
 	})
 	if err != nil {
 		return
@@ -125,19 +132,25 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 type queuedUsageDetail struct {
 	requestDetail
-	AccountingVersion   int                      `json:"accounting_version"`
-	TokenBreakdown      coreusage.TokenBreakdown `json:"token_breakdown"`
-	Provider            string                   `json:"provider"`
-	ExecutorType        string                   `json:"executor_type"`
-	Model               string                   `json:"model"`
-	Alias               string                   `json:"alias"`
-	Endpoint            string                   `json:"endpoint"`
-	AuthType            string                   `json:"auth_type"`
-	APIKey              string                   `json:"api_key"`
-	RequestID           string                   `json:"request_id"`
-	ReasoningEffort     string                   `json:"reasoning_effort"`
-	ServiceTier         string                   `json:"service_tier"`
-	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`
+	AccountingVersion       int                      `json:"accounting_version"`
+	TokenBreakdown          coreusage.TokenBreakdown `json:"token_breakdown"`
+	Provider                string                   `json:"provider"`
+	ExecutorType            string                   `json:"executor_type"`
+	Model                   string                   `json:"model"`
+	Alias                   string                   `json:"alias"`
+	Endpoint                string                   `json:"endpoint"`
+	AuthType                string                   `json:"auth_type"`
+	APIKey                  string                   `json:"api_key"`
+	RequestID               string                   `json:"request_id"`
+	ReasoningEffort         string                   `json:"reasoning_effort"`
+	OverdraftAction         string                   `json:"overdraft_action,omitempty"`
+	OverdraftReason         string                   `json:"overdraft_reason,omitempty"`
+	OverdraftDecisionID     string                   `json:"overdraft_decision_id,omitempty"`
+	OverdraftPayloadVersion string                   `json:"overdraft_payload_version,omitempty"`
+	OverdraftGateWindow     string                   `json:"overdraft_gate_window,omitempty"`
+	OverdraftCycleKey       string                   `json:"overdraft_cycle_key,omitempty"`
+	ServiceTier             string                   `json:"service_tier"`
+	ResponseServiceTier     string                   `json:"response_service_tier,omitempty"`
 }
 
 type requestDetail struct {
@@ -145,6 +158,7 @@ type requestDetail struct {
 	LatencyMs       int64       `json:"latency_ms"`
 	TTFTMs          int64       `json:"ttft_ms"`
 	Source          string      `json:"source"`
+	AuthID          string      `json:"auth_id,omitempty"`
 	AuthIndex       string      `json:"auth_index"`
 	AccessTokenHash string      `json:"access_token_sha256,omitempty"`
 	ClientIP        string      `json:"client_ip"`

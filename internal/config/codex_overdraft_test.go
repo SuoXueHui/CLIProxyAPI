@@ -38,6 +38,42 @@ func TestParseConfigBytesCodexWeeklyOverdraftDefaults(t *testing.T) {
 	}
 }
 
+func TestParseConfigBytesCodexAccountDeviceIdentityDefaults(t *testing.T) {
+	cfg, errParse := ParseConfigBytes([]byte(`{}`))
+	if errParse != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", errParse)
+	}
+	if got, want := cfg.Codex.AccountDeviceIdentity, CodexAccountDeviceIdentityModeOff; got != want {
+		t.Fatalf("AccountDeviceIdentity = %q, want %q", got, want)
+	}
+}
+
+func TestParseConfigBytesCodexAccountDeviceIdentityModes(t *testing.T) {
+	tests := map[string]string{
+		"account device": "account_device",
+		"hyphen alias":   "account-device",
+		"uppercase":      "ACCOUNT_DEVICE",
+	}
+	for name, mode := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg, errParse := ParseConfigBytes([]byte("codex:\n  account-device-identity: " + mode + "\n"))
+			if errParse != nil {
+				t.Fatalf("ParseConfigBytes() error = %v", errParse)
+			}
+			if got, want := cfg.Codex.AccountDeviceIdentity, CodexAccountDeviceIdentityModeAccountDevice; got != want {
+				t.Fatalf("AccountDeviceIdentity = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestParseConfigBytesRejectsInvalidCodexAccountDeviceIdentityMode(t *testing.T) {
+	_, errParse := ParseConfigBytes([]byte("codex:\n  account-device-identity: browser\n"))
+	if errParse == nil {
+		t.Fatal("ParseConfigBytes() error = nil, want invalid account device identity mode")
+	}
+}
+
 func TestParseConfigBytesCodexWeeklyOverdraftExplicitValues(t *testing.T) {
 	cfg, errParse := ParseConfigBytes([]byte(`
 codex:

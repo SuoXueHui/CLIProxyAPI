@@ -31,6 +31,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/codex-weekly-overdraft", s.mgmt.GetCodexWeeklyOverdraftStatus)
+		mgmt.POST("/codex-overdraft/probe", s.mgmt.PostCodexOverdraftProbe)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 		mgmt.GET("/plugins", s.mgmt.ListPlugins)
 		mgmt.GET("/plugin-store", s.mgmt.ListPluginStore)

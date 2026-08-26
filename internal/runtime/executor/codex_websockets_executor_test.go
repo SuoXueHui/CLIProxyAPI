@@ -1446,6 +1446,32 @@ func TestApplyCodexWebsocketHeadersIdentityConfuseRemapsPromptCacheKey(t *testin
 	}
 }
 
+func TestApplyCodexWebsocketBodyAccountDeviceIdentityAddsStableInstallationID(t *testing.T) {
+	cfg := &config.Config{Codex: config.CodexConfig{AccountDeviceIdentity: config.CodexAccountDeviceIdentityModeAccountDevice}}
+	auth := &cliproxyauth.Auth{
+		ID:       "auth-ws-account-device",
+		Provider: "codex",
+		Attributes: map[string]string{
+			cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth,
+		},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex"}`),
+	}
+	body := []byte(`{"model":"gpt-5-codex","prompt_cache_key":"cache-ws"}`)
+	updated, state := applyCodexIdentityConfuseBody(cfg, auth, req.Payload, body)
+	if state.enabled {
+		t.Fatal("identity-confuse state enabled, want false")
+	}
+	if got, want := gjson.GetBytes(updated, "client_metadata.x-codex-installation-id").String(), codexAccountDeviceIdentityUUID(auth.ID); got != want {
+		t.Fatalf("installation id = %q, want %q; body=%s", got, want, updated)
+	}
+	if got := gjson.GetBytes(updated, "prompt_cache_key").String(); got != "cache-ws" {
+		t.Fatalf("prompt_cache_key = %q, want cache-ws", got)
+	}
+}
+
 func TestCodexIdentityConfuseResponsePayloadHidesUpstreamAndRestoresClient(t *testing.T) {
 	state := codexIdentityConfuseState{
 		enabled:                true,

@@ -115,6 +115,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
 	}
+	if oldCfg.Codex.AccountDeviceIdentity != newCfg.Codex.AccountDeviceIdentity {
+		changes = append(changes, fmt.Sprintf("codex.account-device-identity: %s -> %s", oldCfg.Codex.AccountDeviceIdentity, newCfg.Codex.AccountDeviceIdentity))
+	}
 	if oldCfg.Codex.DisableCodexCloaking != newCfg.Codex.DisableCodexCloaking {
 		changes = append(changes, fmt.Sprintf("codex.disable-codex-cloaking: %t -> %t", oldCfg.Codex.DisableCodexCloaking, newCfg.Codex.DisableCodexCloaking))
 	}
@@ -143,6 +146,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	}
 	if oldOverdraft.MaxBodyBytes != newOverdraft.MaxBodyBytes {
 		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.max-body-bytes: %d -> %d", oldOverdraft.MaxBodyBytes, newOverdraft.MaxBodyBytes))
+	}
+	if oldOverdraft.GateMode != newOverdraft.GateMode {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.gate-mode: %s -> %s", oldOverdraft.GateMode, newOverdraft.GateMode))
+	}
+	if oldOverdraft.QuotaThresholdPercent != newOverdraft.QuotaThresholdPercent {
+		changes = append(changes, fmt.Sprintf("codex.weekly-overdraft.quota-threshold-percent: %d -> %d", oldOverdraft.QuotaThresholdPercent, newOverdraft.QuotaThresholdPercent))
 	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))

@@ -22,26 +22,32 @@ import (
 )
 
 type UsageReporter struct {
-	provider        string
-	executorType    string
-	model           string
-	alias           string
-	authID          string
-	authIndex       string
-	authMu          sync.RWMutex
-	accessTokenHash string
-	authType        string
-	apiKey          string
-	source          string
-	reasoning       string
-	serviceTier     string
-	generate        bool
-	requestedAt     time.Time
-	ttftMu          sync.RWMutex
-	ttft            time.Duration
-	ttftStart       time.Time
-	ttftSet         bool
-	once            sync.Once
+	provider                string
+	executorType            string
+	model                   string
+	alias                   string
+	authID                  string
+	authIndex               string
+	authMu                  sync.RWMutex
+	accessTokenHash         string
+	authType                string
+	apiKey                  string
+	source                  string
+	overdraftAction         string
+	overdraftReason         string
+	overdraftDecisionID     string
+	overdraftPayloadVersion string
+	overdraftGateWindow     string
+	overdraftCycleKey       string
+	reasoning               string
+	serviceTier             string
+	generate                bool
+	requestedAt             time.Time
+	ttftMu                  sync.RWMutex
+	ttft                    time.Duration
+	ttftStart               time.Time
+	ttftSet                 bool
+	once                    sync.Once
 }
 
 type usageExecutor interface {
@@ -131,6 +137,27 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+}
+
+// SetCodexOverdraftMetadata records only the sanitized local decision for usage sinks.
+func (r *UsageReporter) SetCodexOverdraftMetadata(action, reason string) {
+	if r == nil {
+		return
+	}
+	r.overdraftAction = strings.TrimSpace(action)
+	r.overdraftReason = strings.TrimSpace(reason)
+}
+
+// SetCodexOverdraftDecision attaches only the bounded decision summary used by
+// the Manager state machine; request payloads and credential material stay out.
+func (r *UsageReporter) SetCodexOverdraftDecision(decisionID, payloadVersion, gateWindow, cycleKey string) {
+	if r == nil {
+		return
+	}
+	r.overdraftDecisionID = strings.TrimSpace(decisionID)
+	r.overdraftPayloadVersion = strings.TrimSpace(payloadVersion)
+	r.overdraftGateWindow = strings.TrimSpace(gateWindow)
+	r.overdraftCycleKey = strings.TrimSpace(cycleKey)
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
@@ -278,26 +305,32 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	return usage.Record{
-		Provider:            r.provider,
-		ExecutorType:        r.executorType,
-		Model:               model,
-		Alias:               r.alias,
-		Source:              r.source,
-		APIKey:              r.apiKey,
-		AuthID:              r.authID,
-		AuthIndex:           r.authIndex,
-		AccessTokenSHA256:   r.accessTokenFingerprint(),
-		AuthType:            r.authType,
-		ReasoningEffort:     r.reasoning,
-		ServiceTier:         r.serviceTier,
-		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
-		Generate:            usage.GenerateFlag(r.generate),
-		RequestedAt:         r.requestedAt,
-		Latency:             r.latency(),
-		TTFT:                r.ttftDuration(),
-		Failed:              failed,
-		Fail:                fail,
-		Detail:              detail,
+		Provider:                r.provider,
+		ExecutorType:            r.executorType,
+		Model:                   model,
+		Alias:                   r.alias,
+		Source:                  r.source,
+		OverdraftAction:         r.overdraftAction,
+		OverdraftReason:         r.overdraftReason,
+		OverdraftDecisionID:     r.overdraftDecisionID,
+		OverdraftPayloadVersion: r.overdraftPayloadVersion,
+		OverdraftGateWindow:     r.overdraftGateWindow,
+		OverdraftCycleKey:       r.overdraftCycleKey,
+		APIKey:                  r.apiKey,
+		AuthID:                  r.authID,
+		AuthIndex:               r.authIndex,
+		AccessTokenSHA256:       r.accessTokenFingerprint(),
+		AuthType:                r.authType,
+		ReasoningEffort:         r.reasoning,
+		ServiceTier:             r.serviceTier,
+		ResponseServiceTier:     strings.TrimSpace(detail.ResponseServiceTier),
+		Generate:                usage.GenerateFlag(r.generate),
+		RequestedAt:             r.requestedAt,
+		Latency:                 r.latency(),
+		TTFT:                    r.ttftDuration(),
+		Failed:                  failed,
+		Fail:                    fail,
+		Detail:                  detail,
 	}
 }
 

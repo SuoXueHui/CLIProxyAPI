@@ -36,6 +36,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			Alias:               "client-gpt",
 			APIKey:              "test-key",
 			AuthIndex:           "0",
+			AuthID:              "codex-auth-1",
 			AccessTokenSHA256:   "token-version-hash",
 			AuthType:            "apikey",
 			Source:              "user@example.com",
@@ -50,7 +51,13 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 				OutputTokens: 20,
 				TotalTokens:  30,
 			},
-			ResponseHeaders: responseHeaders.Clone(),
+			ResponseHeaders:         responseHeaders.Clone(),
+			OverdraftAction:         "injected",
+			OverdraftReason:         "quota-gate",
+			OverdraftDecisionID:     "od_123",
+			OverdraftPayloadVersion: "core-v1",
+			OverdraftGateWindow:     "7d",
+			OverdraftCycleKey:       "cycle-1",
 		})
 		responseHeaders.Set("Retry-After", "999")
 
@@ -61,6 +68,13 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "alias", "client-gpt")
 		requireStringField(t, payload, "endpoint", "POST /v1/chat/completions")
 		requireStringField(t, payload, "auth_type", "apikey")
+		requireStringField(t, payload, "auth_id", "codex-auth-1")
+		requireStringField(t, payload, "overdraft_action", "injected")
+		requireStringField(t, payload, "overdraft_reason", "quota-gate")
+		requireStringField(t, payload, "overdraft_decision_id", "od_123")
+		requireStringField(t, payload, "overdraft_payload_version", "core-v1")
+		requireStringField(t, payload, "overdraft_gate_window", "7d")
+		requireStringField(t, payload, "overdraft_cycle_key", "cycle-1")
 		requireStringField(t, payload, "access_token_sha256", "token-version-hash")
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "ctx-request-id")

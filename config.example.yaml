@@ -241,6 +241,9 @@ codex:
   # Some superstitious users believe request tracking identifiers can be used
   # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
   identity-confuse: false
+  # Keep one stable application-level installation ID per Codex OAuth account.
+  # This only changes client_metadata.x-codex-installation-id and does not alter session or turn IDs.
+  account-device-identity: off # off or account_device
   # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
   disable-codex-cloaking: false
   # When true, optimize Codex Desktop, codex-tui, and codex_cli_rs requests for multi-agent v2.
@@ -258,6 +261,8 @@ codex:
     tail-policy: user-and-tool-output # user-only or user-and-tool-output
     oauth-only: true
     max-body-bytes: 8388608 # maximum 32 MiB
+    gate-mode: off # off or header-or-429; closed until a verified quota signal is seen
+    quota-threshold-percent: 95
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:

@@ -116,6 +116,32 @@ func TestApplyCodexWeeklyOverdraftForRequestClassifiesOAuth(t *testing.T) {
 	}
 }
 
+func TestApplyCodexWeeklyOverdraftProbeBypassesInjection(t *testing.T) {
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	cfg := &config.Config{Codex: config.CodexConfig{WeeklyOverdraft: weeklyOverdraftTestConfig()}}
+	req := cliproxyexecutor.Request{Payload: body, Metadata: map[string]any{CodexWeeklyOverdraftProbeMetadataKey: true}}
+	auth := &cliproxyauth.Auth{ID: "probe-auth", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}
+	got, decision := ApplyCodexWeeklyOverdraftForRequest(cfg, auth, req, body)
+	assertSameBodyBacking(t, got, body)
+	if decision.Action != CodexWeeklyOverdraftActionProbe || decision.Reason != CodexWeeklyOverdraftReasonProbe {
+		t.Fatalf("probe decision = %#v", decision)
+	}
+}
+
+func TestCodexWeeklyOverdraftGateOpensOnlyForDefiniteQuota(t *testing.T) {
+	cfg := weeklyOverdraftTestConfig()
+	cfg.GateMode = config.CodexWeeklyOverdraftGateModeHeaderOr429
+	req := CodexWeeklyOverdraftRequest{Config: cfg, AuthID: "gate-auth", SessionID: "gate-session", OAuth: true, Metadata: map[string]any{"codex_overdraft_window": "5h"}, Body: []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)}
+	if _, decision := ApplyCodexWeeklyOverdraftForRequest(&config.Config{Codex: config.CodexConfig{WeeklyOverdraft: cfg}}, &cliproxyauth.Auth{ID: "gate-auth", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}, cliproxyexecutor.Request{Payload: req.Body, Metadata: req.Metadata}, req.Body); decision.Reason != CodexWeeklyOverdraftReasonGateClosed {
+		t.Fatalf("initial gate decision = %#v", decision)
+	}
+	RecordCodexWeeklyOverdraftQuotaEvidence("gate-auth", "5h", http.StatusTooManyRequests, nil, []byte(`{"error":{"code":"usage_limit_reached"}}`))
+	_, decision := ApplyCodexWeeklyOverdraftForRequest(&config.Config{Codex: config.CodexConfig{WeeklyOverdraft: cfg}}, &cliproxyauth.Auth{ID: "gate-auth", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}, cliproxyexecutor.Request{Payload: req.Body, Metadata: req.Metadata}, req.Body)
+	if decision.Action != CodexWeeklyOverdraftActionInjected {
+		t.Fatalf("opened gate decision = %#v", decision)
+	}
+}
+
 func TestApplyCodexWeeklyOverdraftEligibleTails(t *testing.T) {
 	tests := []struct {
 		name string

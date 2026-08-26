@@ -77,6 +77,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	clientBody := body
 	body, overdraftDecision := helps.ApplyCodexWeeklyOverdraftForRequest(e.cfg, auth, req, body)
+	if overdraftDecision.Action != helps.CodexWeeklyOverdraftActionSkipped {
+		reporter.SetCodexOverdraftMetadata(overdraftDecision.Action, overdraftDecision.Reason)
+		reporter.SetCodexOverdraftDecision(overdraftDecision.DecisionID, overdraftDecision.PayloadVersion, overdraftDecision.GateWindow, overdraftDecision.CycleKey)
+	}
 	defer func() {
 		if err != nil {
 			helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, err)
@@ -121,6 +125,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		data, readErr := io.ReadAll(httpResp.Body)
+		threshold := 95
+		if e.cfg != nil && e.cfg.Codex.WeeklyOverdraft.QuotaThresholdPercent > 0 {
+			threshold = e.cfg.Codex.WeeklyOverdraft.QuotaThresholdPercent
+		}
+		helps.RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold(auth.ID, overdraftDecision.GateWindow, threshold, httpResp.StatusCode, httpResp.Header, data)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("codex executor: close response body error: %v", errClose)
 		}

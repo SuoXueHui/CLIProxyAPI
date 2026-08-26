@@ -175,6 +175,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
 	reporter.StartResponseTTFT()
 	upstreamBody, overdraftDecision := helps.ApplyCodexWeeklyOverdraftForRequest(e.cfg, auth, req, upstreamBody)
+	if overdraftDecision.Action != helps.CodexWeeklyOverdraftActionSkipped {
+		reporter.SetCodexOverdraftMetadata(overdraftDecision.Action, overdraftDecision.Reason)
+		reporter.SetCodexOverdraftDecision(overdraftDecision.DecisionID, overdraftDecision.PayloadVersion, overdraftDecision.GateWindow, overdraftDecision.CycleKey)
+	}
 	defer func() {
 		if err != nil {
 			helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, err)

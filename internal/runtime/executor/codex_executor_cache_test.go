@@ -253,6 +253,130 @@ func TestCodexExecutorCacheHelper_IdentityConfuseRemapsBodyAndHeaders(t *testing
 	}
 }
 
+func TestCodexExecutorCacheHelperAccountDeviceIdentityAddsStableInstallationID(t *testing.T) {
+	executor := &CodexExecutor{cfg: &config.Config{
+		Codex: config.CodexConfig{AccountDeviceIdentity: config.CodexAccountDeviceIdentityModeAccountDevice},
+	}}
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-account-device-1",
+		Provider: "codex",
+		Attributes: map[string]string{
+			cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth,
+		},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex"}`),
+	}
+	rawJSON := []byte(`{"model":"gpt-5-codex","prompt_cache_key":"cache-keep"}`)
+
+	firstReq, firstBody, state, errFirst := executor.cacheHelper(context.Background(), sdktranslator.FormatOpenAIResponse, "https://example.com/responses", auth, req, req.Payload, rawJSON)
+	if errFirst != nil {
+		t.Fatalf("cacheHelper() first error = %v", errFirst)
+	}
+	secondReq, secondBody, _, errSecond := executor.cacheHelper(context.Background(), sdktranslator.FormatOpenAIResponse, "https://example.com/responses", auth, req, req.Payload, rawJSON)
+	if errSecond != nil {
+		t.Fatalf("cacheHelper() second error = %v", errSecond)
+	}
+
+	wantInstallationID := codexAccountDeviceIdentityUUID(auth.ID)
+	for name, body := range map[string][]byte{"returned": firstBody, "request": readRequestBody(t, firstReq), "second": secondBody} {
+		if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != wantInstallationID {
+			t.Fatalf("%s installation id = %q, want %q; body=%s", name, got, wantInstallationID, body)
+		}
+		if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != "cache-keep" {
+			t.Fatalf("%s prompt_cache_key = %q, want cache-keep", name, got)
+		}
+	}
+	if state.enabled {
+		t.Fatal("identity-confuse state enabled, want false when only account_device is configured")
+	}
+	if got := gjson.GetBytes(readRequestBody(t, secondReq), "client_metadata.x-codex-installation-id").String(); got != wantInstallationID {
+		t.Fatalf("second request installation id = %q, want %q", got, wantInstallationID)
+	}
+}
+
+func TestCodexExecutorCacheHelperAccountDeviceIdentityOnlyAffectsCodexOAuth(t *testing.T) {
+	cfg := &config.Config{Codex: config.CodexConfig{AccountDeviceIdentity: config.CodexAccountDeviceIdentityModeAccountDevice}}
+	executor := &CodexExecutor{cfg: cfg}
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"model":"gpt-5-codex"}`)}
+	rawJSON := []byte(`{"model":"gpt-5-codex"}`)
+	for name, auth := range map[string]*cliproxyauth.Auth{
+		"api key":        {ID: "api-key", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAPIKey: "secret"}},
+		"other provider": {ID: "other", Provider: "openai", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, body, _, errCache := executor.cacheHelper(context.Background(), sdktranslator.FormatOpenAIResponse, "https://example.com/responses", auth, req, req.Payload, rawJSON)
+			if errCache != nil {
+				t.Fatalf("cacheHelper() error = %v", errCache)
+			}
+			if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id"); got.Exists() {
+				t.Fatalf("installation id unexpectedly added: %s", got.Raw)
+			}
+		})
+	}
+}
+
+func TestCodexAccountDeviceIdentityMalformedMetadataFailsOpen(t *testing.T) {
+	cfg := &config.Config{Codex: config.CodexConfig{AccountDeviceIdentity: config.CodexAccountDeviceIdentityModeAccountDevice}}
+	auth := &cliproxyauth.Auth{ID: "malformed-metadata", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}
+	body := []byte(`{"model":"gpt-5-codex","client_metadata":"invalid"}`)
+	updated, applied := applyCodexAccountDeviceIdentityBody(cfg, auth, body)
+	if applied {
+		t.Fatal("malformed client_metadata unexpectedly applied account device identity")
+	}
+	if string(updated) != string(body) {
+		t.Fatalf("malformed body changed: got %s, want %s", updated, body)
+	}
+}
+
+func TestCodexExecutorCacheHelperAccountDeviceIdentityWinsInstallationFieldOnly(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{SessionAffinity: true},
+		Codex: config.CodexConfig{
+			IdentityConfuse:       true,
+			AccountDeviceIdentity: config.CodexAccountDeviceIdentityModeAccountDevice,
+		},
+	}
+	executor := &CodexExecutor{cfg: cfg}
+	auth := &cliproxyauth.Auth{ID: "both-identities", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","prompt_cache_key":"cache-1","client_metadata":{"x-codex-installation-id":"install-1"}}`),
+	}
+	rawJSON := []byte(`{"model":"gpt-5-codex","prompt_cache_key":"cache-1","client_metadata":{"x-codex-installation-id":"install-1"}}`)
+	_, body, state, errCache := executor.cacheHelper(context.Background(), sdktranslator.FormatOpenAIResponse, "https://example.com/responses", auth, req, req.Payload, rawJSON)
+	if errCache != nil {
+		t.Fatalf("cacheHelper() error = %v", errCache)
+	}
+	wantInstallationID := codexAccountDeviceIdentityUUID(auth.ID)
+	if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != wantInstallationID {
+		t.Fatalf("installation id = %q, want account device id %q", got, wantInstallationID)
+	}
+	wantPromptCacheKey := codexIdentityConfuseUUID(auth.ID, "prompt-cache", "cache-1")
+	if got := gjson.GetBytes(body, "prompt_cache_key").String(); got != wantPromptCacheKey {
+		t.Fatalf("prompt_cache_key = %q, want %q", got, wantPromptCacheKey)
+	}
+	if !state.enabled {
+		t.Fatal("identity-confuse state disabled, want legacy identity handling preserved")
+	}
+	if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got == codexIdentityConfuseUUID(auth.ID, "installation", "install-1") {
+		t.Fatal("installation id was rewritten by legacy identity-confuse")
+	}
+}
+
+func readRequestBody(t *testing.T, req *http.Request) []byte {
+	t.Helper()
+	if req == nil || req.Body == nil {
+		t.Fatal("request body is nil")
+	}
+	body, errRead := io.ReadAll(req.Body)
+	if errRead != nil {
+		t.Fatalf("read request body: %v", errRead)
+	}
+	return body
+}
+
 func TestApplyCodexHeadersUsesAccountHeaderForOAuth(t *testing.T) {
 	httpReq := httptest.NewRequest("POST", "https://example.com/responses", nil)
 	auth := &cliproxyauth.Auth{

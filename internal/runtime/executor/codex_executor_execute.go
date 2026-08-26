@@ -73,6 +73,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	clientBody := body
 	body, overdraftDecision := helps.ApplyCodexWeeklyOverdraftForRequest(e.cfg, auth, req, body)
+	if overdraftDecision.Action != helps.CodexWeeklyOverdraftActionSkipped {
+		reporter.SetCodexOverdraftMetadata(overdraftDecision.Action, overdraftDecision.Reason)
+		reporter.SetCodexOverdraftDecision(overdraftDecision.DecisionID, overdraftDecision.PayloadVersion, overdraftDecision.GateWindow, overdraftDecision.CycleKey)
+	}
 	defer func() {
 		helps.RecordCodexWeeklyOverdraftOutcome(overdraftDecision, err)
 	}()
@@ -119,6 +123,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
+		threshold := 95
+		if e.cfg != nil && e.cfg.Codex.WeeklyOverdraft.QuotaThresholdPercent > 0 {
+			threshold = e.cfg.Codex.WeeklyOverdraft.QuotaThresholdPercent
+		}
+		helps.RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold(auth.ID, overdraftDecision.GateWindow, threshold, httpResp.StatusCode, httpResp.Header, b)
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)
 		if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, httpResp.StatusCode, b); errClearReplay != nil {
 			return resp, errClearReplay

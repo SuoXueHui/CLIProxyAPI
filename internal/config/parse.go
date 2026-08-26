@@ -37,6 +37,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
+	cfg.Codex.AccountDeviceIdentity = DefaultCodexAccountDeviceIdentityMode()
 	cfg.Codex.WeeklyOverdraft = DefaultCodexWeeklyOverdraftConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -49,6 +50,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	}
 	cfg.Codex.WeeklyOverdraft.Normalize()
 	if errValidate := cfg.Codex.WeeklyOverdraft.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	cfg.Codex.AccountDeviceIdentity = NormalizeCodexAccountDeviceIdentityMode(cfg.Codex.AccountDeviceIdentity)
+	if errValidate := ValidateCodexAccountDeviceIdentityMode(cfg.Codex.AccountDeviceIdentity); errValidate != nil {
 		return nil, errValidate
 	}
 	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {

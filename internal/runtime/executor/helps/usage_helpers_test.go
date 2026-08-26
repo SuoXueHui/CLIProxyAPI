@@ -602,6 +602,23 @@ func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {
 	}
 }
 
+func TestUsageReporterSetCodexOverdraftMetadata(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.4", nil)
+	reporter.SetCodexOverdraftMetadata("injected", "non-canary")
+	reporter.SetCodexOverdraftDecision("od_123", "core-v1", "7d", "cycle-1")
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
+	if record.OverdraftAction != "injected" {
+		t.Fatalf("overdraft action = %q, want injected", record.OverdraftAction)
+	}
+	if record.OverdraftReason != "non-canary" {
+		t.Fatalf("overdraft reason = %q, want non-canary", record.OverdraftReason)
+	}
+	if record.OverdraftDecisionID != "od_123" || record.OverdraftPayloadVersion != "core-v1" || record.OverdraftGateWindow != "7d" || record.OverdraftCycleKey != "cycle-1" {
+		t.Fatalf("overdraft decision metadata = %#v, want id/version/window/cycle", record)
+	}
+}
+
 func TestNewExecutorUsageReporterIncludesExecutorType(t *testing.T) {
 	reporter := NewExecutorUsageReporter(context.Background(), &TestUsageExecutor{}, "gpt-5.4", nil)
 
