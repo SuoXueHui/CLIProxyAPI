@@ -2,9 +2,27 @@ package egress
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
+
+func TestEnsureAddressTreatsAlreadyAssignedAsSuccess(t *testing.T) {
+	if runtimeGOOS := os.Getenv("GOOS"); runtimeGOOS != "" && runtimeGOOS != "linux" {
+		t.Skip("fake ip command test targets Linux command semantics")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ip")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' 'RTNETLINK answers: Address already assigned' >&2\nexit 2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
+	if err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42")); err != nil {
+		t.Fatalf("EnsureAddress() error = %v, want nil for an already assigned address", err)
+	}
+}
 
 func TestDisabledAllocatorIgnoresInvalidConfiguration(t *testing.T) {
 	a, err := NewAllocator(Config{Prefix: "not-a-cidr"})
