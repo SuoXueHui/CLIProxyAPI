@@ -275,6 +275,12 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
 		return err
 	}
+	// IPv6 出口地址属于运行时状态，不在 OAuth JSON 中；上传覆盖旧凭证后要重新触发运行时同步。
+	if h.postAuthPersistHook != nil {
+		if errHook := h.postAuthPersistHook(ctx, auth); errHook != nil {
+			return fmt.Errorf("post auth persist hook failed: %w", errHook)
+		}
+	}
 	return nil
 }
 
@@ -534,6 +540,8 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 			}
 			auth.NextRefreshAfter = existing.NextRefreshAfter
 			auth.Runtime = existing.Runtime
+			// EgressIPv6 由运行时分配器维护，重新导入凭证时必须保留，避免详情显示为未分配。
+			auth.EgressIPv6 = existing.EgressIPv6
 		}
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(auth)
