@@ -965,6 +965,14 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
 		return err
 	}
+	// Keep uploads on the same post-persistence synchronization path as OAuth
+	// writes so runtime-only fields such as the per-account IPv6 binding are
+	// applied after the management record has been updated.
+	if h.postAuthPersistHook != nil {
+		if errHook := h.postAuthPersistHook(ctx, auth); errHook != nil {
+			return fmt.Errorf("post-auth persist hook failed: %w", errHook)
+		}
+	}
 	return nil
 }
 
@@ -1215,6 +1223,9 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	if h != nil && h.authManager != nil {
 		if existing, ok := h.authManager.GetByID(authID); ok {
 			auth.CreatedAt = existing.CreatedAt
+			// EgressIPv6 is runtime-only and is intentionally absent from the
+			// uploaded OAuth JSON; preserve it when replacing an existing auth.
+			auth.EgressIPv6 = existing.EgressIPv6
 			if !hasLastRefresh {
 				auth.LastRefreshedAt = existing.LastRefreshedAt
 			}
