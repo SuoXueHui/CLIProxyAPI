@@ -142,6 +142,18 @@ func TestCodexWeeklyOverdraftGateOpensOnlyForDefiniteQuota(t *testing.T) {
 	}
 }
 
+func TestCodexWeeklyOverdraftGatePropagatesCycleEvidence(t *testing.T) {
+	cfg := weeklyOverdraftTestConfig()
+	cfg.GateMode = config.CodexWeeklyOverdraftGateModeHeaderOr429
+	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	metadata := map[string]any{"codex_overdraft_window": "7d"}
+	RecordCodexWeeklyOverdraftQuotaEvidenceWithThresholdAndCycle("cycle-auth", "7d", 95, "reset:123", time.Now().Add(time.Hour).UnixMilli(), http.StatusTooManyRequests, nil, []byte(`{"error":{"code":"quota_snapshot_threshold"}}`))
+	_, decision := ApplyCodexWeeklyOverdraftForRequest(&config.Config{Codex: config.CodexConfig{WeeklyOverdraft: cfg}}, &cliproxyauth.Auth{ID: "cycle-auth", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}, cliproxyexecutor.Request{Payload: body, Metadata: metadata}, body)
+	if decision.GateWindow != "7d" || decision.CycleKey != "reset:123" {
+		t.Fatalf("gate evidence was not propagated: %#v", decision)
+	}
+}
+
 func TestApplyCodexWeeklyOverdraftEligibleTails(t *testing.T) {
 	tests := []struct {
 		name string

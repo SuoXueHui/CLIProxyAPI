@@ -109,7 +109,8 @@ func ApplyCodexWeeklyOverdraftForRequest(cfg *config.Config, auth *cliproxyauth.
 		return body, newCodexWeeklyOverdraftDecision(req, authID, CodexWeeklyOverdraftActionProbe, CodexWeeklyOverdraftReasonProbe)
 	}
 	overdraftConfig.Normalize()
-	if !codexWeeklyOverdraftGateOpen(overdraftConfig, authID, req.Metadata) {
+	gateOpen, gateWindow, gateCycleKey := codexWeeklyOverdraftGateOpen(overdraftConfig, authID, req.Metadata)
+	if !gateOpen {
 		return body, CodexWeeklyOverdraftDecision{Action: CodexWeeklyOverdraftActionSkipped, Reason: CodexWeeklyOverdraftReasonGateClosed}
 	}
 
@@ -117,7 +118,7 @@ func ApplyCodexWeeklyOverdraftForRequest(cfg *config.Config, auth *cliproxyauth.
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 	}
-	return ApplyCodexWeeklyOverdraft(CodexWeeklyOverdraftRequest{
+	updated, decision := ApplyCodexWeeklyOverdraft(CodexWeeklyOverdraftRequest{
 		Config:    overdraftConfig,
 		AuthID:    authID,
 		SessionID: sessionID,
@@ -125,42 +126,99 @@ func ApplyCodexWeeklyOverdraftForRequest(cfg *config.Config, auth *cliproxyauth.
 		Metadata:  req.Metadata,
 		Body:      body,
 	})
+	if decision.GateWindow == "unknown" && gateWindow != "unknown" {
+		decision.GateWindow = gateWindow
+	}
+	if (decision.CycleKey == "" || decision.CycleKey == "unknown") && gateCycleKey != "" {
+		decision.CycleKey = gateCycleKey
+	}
+	return updated, decision
 }
 
 type codexWeeklyOverdraftGateEvidence struct {
 	openedAt time.Time
+	cycleKey string
+	resetAt  time.Time
 }
 
 var codexWeeklyOverdraftGates sync.Map
 
-func codexWeeklyOverdraftGateOpen(cfg config.CodexWeeklyOverdraftConfig, authID string, metadata map[string]any) bool {
+func codexWeeklyOverdraftGateOpen(cfg config.CodexWeeklyOverdraftConfig, authID string, metadata map[string]any) (bool, string, string) {
 	if strings.TrimSpace(cfg.GateMode) == "" || cfg.GateMode == config.CodexWeeklyOverdraftGateModeOff {
-		return true
+		return true, codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_window"), codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_cycle_key")
 	}
-	key := strings.TrimSpace(authID) + "\x00" + codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_window")
-	value, ok := codexWeeklyOverdraftGates.Load(key)
-	if !ok {
-		return false
+	authID = strings.TrimSpace(authID)
+	window := normalizeCodexOverdraftWindow(codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_window"))
+	if window != "unknown" {
+		if value, ok := codexWeeklyOverdraftGates.Load(authID + "\x00" + window); ok {
+			evidence := value.(codexWeeklyOverdraftGateEvidence)
+			ttl := 6 * time.Hour
+			if window == "7d" {
+				ttl = 7 * 24 * time.Hour
+			}
+			active := time.Since(evidence.openedAt) < ttl
+			if !evidence.resetAt.IsZero() {
+				active = time.Now().Before(evidence.resetAt)
+			}
+			if active {
+				return true, window, evidence.cycleKey
+			}
+			codexWeeklyOverdraftGates.Delete(authID + "\x00" + window)
+		}
+		return false, window, ""
 	}
-	return time.Since(value.(codexWeeklyOverdraftGateEvidence).openedAt) < 6*time.Hour
+	for _, candidate := range []string{"5h", "7d"} {
+		value, ok := codexWeeklyOverdraftGates.Load(authID + "\x00" + candidate)
+		if !ok {
+			continue
+		}
+		evidence := value.(codexWeeklyOverdraftGateEvidence)
+		ttl := 6 * time.Hour
+		if candidate == "7d" {
+			ttl = 7 * 24 * time.Hour
+		}
+		active := time.Since(evidence.openedAt) < ttl
+		if !evidence.resetAt.IsZero() {
+			active = time.Now().Before(evidence.resetAt)
+		}
+		if active {
+			return true, candidate, evidence.cycleKey
+		}
+		codexWeeklyOverdraftGates.Delete(authID + "\x00" + candidate)
+	}
+	return false, "unknown", ""
 }
 
 // RecordCodexWeeklyOverdraftQuotaEvidence opens the local gate only for a
 // verified quota signal. It is intentionally conservative and ignores generic
 // 429s, transport failures, and arbitrary response text.
 func RecordCodexWeeklyOverdraftQuotaEvidence(authID, window string, status int, headers http.Header, body []byte) {
-	RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold(authID, window, 95, status, headers, body)
+	RecordCodexWeeklyOverdraftQuotaEvidenceWithThresholdAndCycle(authID, window, 95, "", 0, status, headers, body)
 }
 
 // RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold is the configurable
 // variant used by the executor. The legacy wrapper above keeps tests and
 // internal callers source-compatible with the original conservative threshold.
 func RecordCodexWeeklyOverdraftQuotaEvidenceWithThreshold(authID, window string, threshold, status int, headers http.Header, body []byte) {
+	RecordCodexWeeklyOverdraftQuotaEvidenceWithThresholdAndCycle(authID, window, threshold, "", 0, status, headers, body)
+}
+
+// RecordCodexWeeklyOverdraftQuotaEvidenceWithThresholdAndCycle records a
+// Manager-verified window and closes it automatically at the provider reset.
+func RecordCodexWeeklyOverdraftQuotaEvidenceWithThresholdAndCycle(authID, window string, threshold int, cycleKey string, resetAtMS int64, status int, headers http.Header, body []byte) {
 	if strings.TrimSpace(authID) == "" || status != 429 || !codexWeeklyOverdraftQuotaSignal(headers, body, threshold) {
 		return
 	}
-	key := strings.TrimSpace(authID) + "\x00" + normalizeCodexOverdraftWindow(window)
-	codexWeeklyOverdraftGates.Store(key, codexWeeklyOverdraftGateEvidence{openedAt: time.Now()})
+	normalizedWindow := normalizeCodexOverdraftWindow(window)
+	if normalizedWindow == "unknown" {
+		return
+	}
+	key := strings.TrimSpace(authID) + "\x00" + normalizedWindow
+	evidence := codexWeeklyOverdraftGateEvidence{openedAt: time.Now(), cycleKey: strings.TrimSpace(cycleKey)}
+	if resetAtMS > 0 {
+		evidence.resetAt = time.UnixMilli(resetAtMS)
+	}
+	codexWeeklyOverdraftGates.Store(key, evidence)
 }
 
 func codexWeeklyOverdraftQuotaSignal(headers http.Header, body []byte, threshold int) bool {
@@ -168,7 +226,7 @@ func codexWeeklyOverdraftQuotaSignal(headers http.Header, body []byte, threshold
 		threshold = 95
 	}
 	text := strings.ToLower(string(body))
-	for _, marker := range []string{"usage_limit_reached", "quota_exceeded", "rate_limit_reached", "usage limit reached", "quota exceeded"} {
+	for _, marker := range []string{"usage_limit_reached", "quota_exceeded", "rate_limit_reached", "usage limit reached", "quota exceeded", "quota_snapshot_threshold"} {
 		if strings.Contains(text, marker) {
 			return true
 		}
