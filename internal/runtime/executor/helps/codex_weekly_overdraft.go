@@ -218,6 +218,18 @@ func RecordCodexWeeklyOverdraftQuotaEvidenceWithThresholdAndCycle(authID, window
 	if resetAtMS > 0 {
 		evidence.resetAt = time.UnixMilli(resetAtMS)
 	}
+	// A later direct 429 may not carry Manager's cycle/reset metadata. Preserve
+	// the richer evidence already opened for this account/window instead of
+	// downgrading it to an anonymous TTL-only gate.
+	if previous, ok := codexWeeklyOverdraftGates.Load(key); ok {
+		prior := previous.(codexWeeklyOverdraftGateEvidence)
+		if evidence.cycleKey == "" {
+			evidence.cycleKey = prior.cycleKey
+		}
+		if evidence.resetAt.IsZero() {
+			evidence.resetAt = prior.resetAt
+		}
+	}
 	codexWeeklyOverdraftGates.Store(key, evidence)
 }
 

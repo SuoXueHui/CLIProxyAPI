@@ -143,7 +143,10 @@ func (h *Handler) PostCodexOverdraftGate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "quota evidence percentages are invalid"})
 		return
 	}
-	if input.UsedPercent < float64(helperThreshold) && input.Remaining > float64(100-helperThreshold) {
+	// Manager sends the measured used percentage as the authoritative threshold
+	// signal; remaining_percent is retained for observability only and cannot
+	// override a below-threshold used value.
+	if input.UsedPercent < float64(helperThreshold) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "quota evidence is below threshold"})
 		return
 	}

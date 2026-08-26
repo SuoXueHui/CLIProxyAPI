@@ -163,3 +163,18 @@ func TestPutCodexOverdraftConfigLeavesMemoryUnchangedOnSaveFailure(t *testing.T)
 		t.Fatalf("unexpected config file state: %v", errStat)
 	}
 }
+
+func TestPostCodexOverdraftGateRequiresUsedPercentThreshold(t *testing.T) {
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	ctx, recorder := newManagementJSONContext(http.MethodPost, "/v0/management/codex-overdraft/gate", `{"auth_id":"auth-1","window":"5h","used_percent":94,"remaining_percent":0,"threshold_percent":95,"verified":true}`)
+	h.PostCodexOverdraftGate(ctx)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+
+	ctx, recorder = newManagementJSONContext(http.MethodPost, "/v0/management/codex-overdraft/gate", `{"auth_id":"auth-1","window":"5h","used_percent":95,"remaining_percent":5,"threshold_percent":95,"verified":true}`)
+	h.PostCodexOverdraftGate(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+}
