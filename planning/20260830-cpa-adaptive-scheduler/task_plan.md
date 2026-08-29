@@ -11,5 +11,5 @@ Keep ingress concurrency unchanged while preventing new requests from piling ont
 - [completed] Implement scheduler runtime state and selection integration.
 - [completed] Measure stream first event/total duration and release in-flight leases.
 - [completed] Integrate plugin scheduler candidate filtering and observability metadata.
-- [pending] Run focused tests, race tests, full tests, and build verification.
-- [pending] Commit branch, merge into master, and deploy with post-deploy checks.
+- [completed] Run focused tests, race tests, full tests, and build verification.
+- [completed] Commit branch, merge into master, and deploy with post-deploy checks.
