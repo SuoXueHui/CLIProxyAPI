@@ -391,21 +391,31 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
 			startExec := time.Now()
+			adaptiveLease := m.scheduler.acquireAdaptive(provider, resultModel, auth.ID)
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
+				if adaptiveLease != nil {
+					adaptiveLease.release(0, durationExec, false)
+					adaptiveLease = nil
+				}
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
+					adaptiveLease = m.scheduler.acquireAdaptive(provider, resultModel, auth.ID)
 					didRefreshOnUnauthorized = true
 					execCtx = newUpstreamAttemptContext(execCtx)
 					startRetry := time.Now()
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
+						if adaptiveLease != nil {
+							adaptiveLease.release(0, durationRetry, false)
+							adaptiveLease = nil
+						}
 						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
 						if errCtx := execCtx.Err(); errCtx != nil {
 							return cliproxyexecutor.Response{}, errCtx
@@ -416,10 +426,18 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
+				if adaptiveLease != nil {
+					adaptiveLease.release(0, time.Since(startExec), false)
+					adaptiveLease = nil
+				}
 				return cliproxyexecutor.Response{}, errCancel
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil, Options: execOpts}
 			if errExec != nil {
+				if adaptiveLease != nil {
+					adaptiveLease.release(0, time.Since(startExec), false)
+					adaptiveLease = nil
+				}
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
@@ -452,6 +470,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					break
 				}
 				continue
+			}
+			if adaptiveLease != nil {
+				adaptiveLease.release(0, time.Since(startExec), true)
+				adaptiveLease = nil
 			}
 			m.MarkResult(execCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)

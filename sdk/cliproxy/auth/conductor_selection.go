@@ -593,6 +593,14 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		Options:    schedulerOptions(opts),
 		Candidates: schedulerAuthCandidates(candidates),
 	}
+	if m.scheduler != nil {
+		for index, candidate := range candidates {
+			if candidate == nil || index >= len(req.Candidates) {
+				continue
+			}
+			req.Candidates[index].Metadata = m.scheduler.adaptiveCandidateMetadata(executorKeyFromAuth(candidate), model, candidate.ID)
+		}
+	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {
 		return nil, true, errPick
@@ -1274,6 +1282,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	// Apply the volatile adaptive filter before handing candidates to either
+	// the plugin scheduler or the configured selector. Hard availability and
+	// session pinning remain authoritative in the later availability pass.
+	candidates = m.scheduler.filterAdaptiveCandidates(provider, model, candidates, pinnedAuthID)
 	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, provider, model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
@@ -1607,6 +1619,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	candidates = m.scheduler.filterAdaptiveCandidates("mixed", model, candidates, pinnedAuthID)
 	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, "mixed", model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()

@@ -45,6 +45,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	}
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
+	cfg.Routing.AdaptiveAuth = cfg.Routing.AdaptiveAuth.WithDefaults()
+	if errValidate := cfg.Routing.AdaptiveAuth.Validate(); errValidate != nil {
+		return nil, fmt.Errorf("invalid routing.adaptive-auth: %w", errValidate)
+	}
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
 	}

@@ -244,6 +244,20 @@ routing:
   session-affinity: false # default: false
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
+  # In-memory slow-auth avoidance and non-blocking fair scheduling. This never
+  # adds a hard per-auth limit and does not reduce total request concurrency.
+  adaptive-auth:
+    enabled: false
+    observe-only: false
+    first-event-threshold: 15s
+    slow-streak: 2
+    penalty: 30s
+    max-penalty: 5m
+    ewma-alpha: 0.2
+    min-samples: 3
+    load-floor: 10s
+    state-ttl: 6h
+    max-state-entries: 4096
 
 # Codex provider behavior.
 codex:

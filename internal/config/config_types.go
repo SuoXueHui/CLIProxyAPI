@@ -249,6 +249,10 @@ type RoutingConfig struct {
 	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
 	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+
+	// AdaptiveAuth controls in-memory slow-auth avoidance and non-blocking fair
+	// scheduling. It never changes the existing hard cooldown state.
+	AdaptiveAuth AdaptiveAuthConfig `yaml:"adaptive-auth,omitempty" json:"adaptive-auth,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
