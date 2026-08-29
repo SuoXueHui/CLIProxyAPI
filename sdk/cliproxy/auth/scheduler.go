@@ -40,6 +40,7 @@ type authScheduler struct {
 	authProviders       map[string]string
 	mixedCursors        map[string]int
 	mixedWeightedStates map[string]*smoothWeightedState
+	adaptive            adaptiveSchedulerRuntime
 }
 
 // providerScheduler stores auth metadata and model shards for a single provider.
@@ -148,6 +149,7 @@ func newAuthScheduler(selector Selector) *authScheduler {
 		authProviders:       make(map[string]string),
 		mixedCursors:        make(map[string]int),
 		mixedWeightedStates: make(map[string]*smoothWeightedState),
+		adaptive:            newAdaptiveSchedulerRuntime(),
 	}
 }
 
@@ -247,6 +249,11 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+	if s.adaptive.config.Enabled {
+		if picked := s.pickAdaptiveSingleLocked(shard, preferWebsocket, providerKey, modelKey, strategy, predicate); picked != nil {
+			return picked, nil
+		}
+	}
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
 	}
@@ -340,6 +347,11 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 	if !hasCandidate {
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
+	}
+	if s.adaptive.config.Enabled {
+		if picked, providerKey := s.pickAdaptiveMixedLocked(candidateShards, normalized, modelKey, bestPriority, strategy, predicate); picked != nil {
+			return picked.auth, providerKey, nil
+		}
 	}
 
 	if strategy == schedulerStrategyFillFirst {

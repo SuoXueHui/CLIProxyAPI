@@ -104,6 +104,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
 		return configCommit{}
 	}
+	if errValidate := newCfg.Routing.AdaptiveAuth.WithDefaults().Validate(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid adaptive auth scheduling")
+		return configCommit{}
+	}
 
 	s.cfgMu.Lock()
 	s.cfg = newCfg

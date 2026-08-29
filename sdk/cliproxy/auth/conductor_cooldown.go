@@ -142,6 +142,11 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 		m.homeSessionAliases.clear()
 	}
 	m.runtimeConfig.Store(cfg)
+	if m.scheduler != nil {
+		// Adaptive scheduling is volatile and follows the same hot-reloaded
+		// runtime snapshot as cooldown policy without touching persisted auth state.
+		m.scheduler.setAdaptiveConfig(cfg.Routing.AdaptiveAuth)
+	}
 	clearedCooldowns := m.clearDisabledCooldownStates(cfg)
 	if clearedCooldowns && oldCooldownStore != nil {
 		m.mu.Lock()
