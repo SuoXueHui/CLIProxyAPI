@@ -276,6 +276,28 @@ func (s *authScheduler) adaptiveLoadLocked(provider, model, authID string) float
 	return float64(s.adaptive.load[loadKey]) * duration / weight
 }
 
+func (s *authScheduler) adaptiveHasSignalLocked(provider, model string, entries []*scheduledAuth) bool {
+	if s == nil || !s.adaptive.config.Enabled {
+		return false
+	}
+	for _, entry := range entries {
+		if entry == nil || entry.auth == nil {
+			continue
+		}
+		if s.adaptiveLoadLocked(provider, model, entry.auth.ID) > 0 {
+			return true
+		}
+		key, _, okKey := normalizeAdaptiveKey(provider, model, entry.auth.ID)
+		if !okKey {
+			continue
+		}
+		if stats := s.adaptive.health[key]; stats != nil && (stats.sampleCount > 0 || stats.penaltyUntil.After(time.Now())) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *authScheduler) adaptiveCandidateMetadata(provider, model, authID string) map[string]any {
 	if s == nil {
 		return nil
@@ -287,14 +309,19 @@ func (s *authScheduler) adaptiveCandidateMetadata(provider, model, authID string
 	if !s.adaptive.config.Enabled {
 		return nil
 	}
+	key, loadKey, okKey := normalizeAdaptiveKey(provider, model, authID)
+	if !okKey {
+		return nil
+	}
+	stats := s.adaptive.health[key]
+	if s.adaptive.load[loadKey] == 0 && (stats == nil || (stats.sampleCount == 0 && !stats.penaltyUntil.After(time.Now()))) {
+		return nil
+	}
 	metadata := map[string]any{
 		"adaptive_load": s.adaptiveLoadLocked(provider, model, authID),
 	}
-	key, _, okKey := normalizeAdaptiveKey(provider, model, authID)
-	if okKey {
-		if stats := s.adaptive.health[key]; stats != nil && stats.penaltyUntil.After(time.Now()) {
-			metadata["adaptive_penalty_until"] = stats.penaltyUntil.UTC().Format(time.RFC3339Nano)
-		}
+	if stats != nil && stats.penaltyUntil.After(time.Now()) {
+		metadata["adaptive_penalty_until"] = stats.penaltyUntil.UTC().Format(time.RFC3339Nano)
 	}
 	return metadata
 }
@@ -365,6 +392,9 @@ func (s *authScheduler) pickAdaptiveFromViewLocked(view *readyView, provider, mo
 		}
 	}
 	if len(all) == 0 {
+		return nil
+	}
+	if !s.adaptiveHasSignalLocked(provider, model, all) {
 		return nil
 	}
 	if len(healthy) > 0 {
@@ -452,6 +482,23 @@ func (s *authScheduler) pickAdaptiveMixedLocked(shards []*modelScheduler, provid
 		return nil, ""
 	}
 	now := time.Now()
+	hasSignal := false
+	for _, item := range candidates {
+		if s.adaptiveLoadLocked(item.provider, model, item.entry.auth.ID) > 0 {
+			hasSignal = true
+			break
+		}
+		key, _, okKey := normalizeAdaptiveKey(item.provider, model, item.entry.auth.ID)
+		if okKey {
+			if stats := s.adaptive.health[key]; stats != nil && (stats.sampleCount > 0 || stats.penaltyUntil.After(now)) {
+				hasSignal = true
+				break
+			}
+		}
+	}
+	if !hasSignal {
+		return nil, ""
+	}
 	healthy := make([]candidate, 0, len(candidates))
 	for _, item := range candidates {
 		if !s.adaptivePenaltyActiveLocked(item.provider, model, item.entry.auth.ID, now) {

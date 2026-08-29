@@ -9,8 +9,8 @@ import (
 
 func TestAdaptiveAuthConfigWithDefaults(t *testing.T) {
 	cfg := (AdaptiveAuthConfig{}).WithDefaults()
-	if cfg.Enabled {
-		t.Fatal("adaptive auth scheduling must remain opt-in by default")
+	if !cfg.Enabled {
+		t.Fatal("adaptive auth scheduling must be enabled by default")
 	}
 	if cfg.FirstEventThreshold != 15*time.Second {
 		t.Fatalf("FirstEventThreshold = %v, want 15s", cfg.FirstEventThreshold)
@@ -46,6 +46,16 @@ func TestAdaptiveAuthConfigYAMLAndValidation(t *testing.T) {
 	}
 	if !cfg.Enabled || !cfg.ObserveOnly || cfg.FirstEventThreshold != 20*time.Second || cfg.SlowStreak != 3 || cfg.Penalty != 45*time.Second || cfg.MaxPenalty != 6*time.Minute || cfg.EWMAAlpha != 0.3 || cfg.MinSamples != 5 || cfg.LoadFloor != 12*time.Second || cfg.StateTTL != 2*time.Hour || cfg.MaxStateEntries != 128 {
 		t.Fatalf("decoded adaptive config = %#v", cfg)
+	}
+}
+
+func TestAdaptiveAuthConfigExplicitDisable(t *testing.T) {
+	var routing RoutingConfig
+	if errDecode := yaml.Unmarshal([]byte("adaptive-auth:\n  enabled: false\n"), &routing); errDecode != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v", errDecode)
+	}
+	if cfg := routing.AdaptiveAuth.WithDefaults(); cfg.Enabled {
+		t.Fatal("explicit adaptive-auth.enabled=false must remain disabled")
 	}
 }
 

@@ -247,7 +247,7 @@ routing:
   # In-memory slow-auth avoidance and non-blocking fair scheduling. This never
   # adds a hard per-auth limit and does not reduce total request concurrency.
   adaptive-auth:
-    enabled: false
+    enabled: true
     observe-only: false
     first-event-threshold: 15s
     slow-streak: 2
