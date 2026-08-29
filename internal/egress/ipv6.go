@@ -154,7 +154,11 @@ func EnsureAddress(cfg Config, ip net.IP) error {
 	}
 	prefixBits, _ := network.Mask.Size()
 	address := ip.String() + "/" + strconv.Itoa(prefixBits)
-	cmd := exec.Command("ip", "-6", "addr", "add", address, "dev", iface)
+	// Docker bridge interfaces can report duplicate-address detection failures
+	// when an old CPA container and a replacement briefly share the prefix.
+	// These addresses are allocator-owned and intentionally unique, so disable
+	// DAD to keep them bindable during blue/green container handoffs.
+	cmd := exec.Command("ip", "-6", "addr", "add", address, "dev", iface, "nodad")
 	if output, errRun := cmd.CombinedOutput(); errRun != nil {
 		outputLower := strings.ToLower(string(output))
 		if strings.Contains(outputLower, "file exists") || strings.Contains(outputLower, "address already assigned") {

@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -21,6 +22,33 @@ func TestEnsureAddressTreatsAlreadyAssignedAsSuccess(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
 	if err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42")); err != nil {
 		t.Fatalf("EnsureAddress() error = %v, want nil for an already assigned address", err)
+	}
+}
+
+func TestEnsureAddressDisablesDADForDockerBridgeAddress(t *testing.T) {
+	if runtimeGOOS := os.Getenv("GOOS"); runtimeGOOS != "" && runtimeGOOS != "linux" {
+		t.Skip("fake ip command test targets Linux command semantics")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ip")
+	argsPath := filepath.Join(dir, "args")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$IP_ARGS_FILE\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
+	t.Setenv("IP_ARGS_FILE", argsPath)
+
+	if err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42")); err != nil {
+		t.Fatalf("EnsureAddress() error = %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake ip arguments: %v", err)
+	}
+	want := "-6 addr add 2001:db8::42/64 dev eth0 nodad"
+	if got := strings.Join(strings.Fields(string(args)), " "); got != want {
+		t.Fatalf("ip arguments = %q, want %q", got, want)
 	}
 }
 
