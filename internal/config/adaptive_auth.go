@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -32,10 +34,35 @@ type AdaptiveAuthConfig struct {
 	LoadFloor           time.Duration `yaml:"load-floor,omitempty" json:"load-floor,omitempty"`
 	StateTTL            time.Duration `yaml:"state-ttl,omitempty" json:"state-ttl,omitempty"`
 	MaxStateEntries     int           `yaml:"max-state-entries,omitempty" json:"max-state-entries,omitempty"`
+
+	enabledPresent bool
+}
+
+// UnmarshalYAML records whether enabled was explicitly supplied so an omitted
+// block can use the active default while operators can still opt out explicitly.
+func (c *AdaptiveAuthConfig) UnmarshalYAML(value *yaml.Node) error {
+	type rawAdaptiveAuthConfig AdaptiveAuthConfig
+	var raw rawAdaptiveAuthConfig
+	if errDecode := value.Decode(&raw); errDecode != nil {
+		return errDecode
+	}
+	*c = AdaptiveAuthConfig(raw)
+	if value != nil && value.Kind == yaml.MappingNode {
+		for index := 0; index+1 < len(value.Content); index += 2 {
+			if value.Content[index].Value == "enabled" {
+				c.enabledPresent = true
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // WithDefaults applies conservative defaults while preserving explicit values.
 func (c AdaptiveAuthConfig) WithDefaults() AdaptiveAuthConfig {
+	if !c.enabledPresent {
+		c.Enabled = true
+	}
 	if c.FirstEventThreshold == 0 {
 		c.FirstEventThreshold = defaultAdaptiveFirstEventThreshold
 	}
