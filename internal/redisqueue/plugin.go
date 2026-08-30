@@ -85,21 +85,22 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	fail := resolveFail(ctx, record, failed)
 
 	detail := requestDetail{
-		Timestamp:       timestamp,
-		LatencyMs:       record.Latency.Milliseconds(),
-		TTFTMs:          record.TTFT.Milliseconds(),
-		Source:          record.Source,
-		AuthID:          record.AuthID,
-		AuthIndex:       record.AuthIndex,
-		AccessTokenHash: record.AccessTokenSHA256,
-		ClientIP:        clientRequestMetadata.ClientIP,
-		XForwardedFor:   clientRequestMetadata.XForwardedFor,
-		UserAgent:       clientRequestMetadata.UserAgent,
-		Tokens:          tokens,
-		Failed:          failed,
-		Generate:        coreusage.GenerateEnabled(record.Generate),
-		Fail:            fail,
-		ResponseHeaders: record.ResponseHeaders,
+		Timestamp:             timestamp,
+		LatencyMs:             record.Latency.Milliseconds(),
+		TTFTMs:                record.TTFT.Milliseconds(),
+		Source:                record.Source,
+		AuthID:                record.AuthID,
+		AuthIndex:             record.AuthIndex,
+		AuthMemberFingerprint: record.AuthMemberFingerprint,
+		AccessTokenHash:       record.AccessTokenSHA256,
+		ClientIP:              clientRequestMetadata.ClientIP,
+		XForwardedFor:         clientRequestMetadata.XForwardedFor,
+		UserAgent:             clientRequestMetadata.UserAgent,
+		Tokens:                tokens,
+		Failed:                failed,
+		Generate:              coreusage.GenerateEnabled(record.Generate),
+		Fail:                  fail,
+		ResponseHeaders:       record.ResponseHeaders,
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
@@ -154,21 +155,22 @@ type queuedUsageDetail struct {
 }
 
 type requestDetail struct {
-	Timestamp       time.Time   `json:"timestamp"`
-	LatencyMs       int64       `json:"latency_ms"`
-	TTFTMs          int64       `json:"ttft_ms"`
-	Source          string      `json:"source"`
-	AuthID          string      `json:"auth_id,omitempty"`
-	AuthIndex       string      `json:"auth_index"`
-	AccessTokenHash string      `json:"access_token_sha256,omitempty"`
-	ClientIP        string      `json:"client_ip"`
-	XForwardedFor   string      `json:"x_forwarded_for"`
-	UserAgent       string      `json:"user_agent"`
-	Tokens          tokenStats  `json:"tokens"`
-	Failed          bool        `json:"failed"`
-	Generate        bool        `json:"generate"`
-	Fail            failDetail  `json:"fail"`
-	ResponseHeaders http.Header `json:"response_headers,omitempty"`
+	Timestamp             time.Time   `json:"timestamp"`
+	LatencyMs             int64       `json:"latency_ms"`
+	TTFTMs                int64       `json:"ttft_ms"`
+	Source                string      `json:"source"`
+	AuthID                string      `json:"auth_id,omitempty"`
+	AuthIndex             string      `json:"auth_index"`
+	AuthMemberFingerprint string      `json:"auth_member_fingerprint,omitempty"`
+	AccessTokenHash       string      `json:"access_token_sha256,omitempty"`
+	ClientIP              string      `json:"client_ip"`
+	XForwardedFor         string      `json:"x_forwarded_for"`
+	UserAgent             string      `json:"user_agent"`
+	Tokens                tokenStats  `json:"tokens"`
+	Failed                bool        `json:"failed"`
+	Generate              bool        `json:"generate"`
+	Fail                  failDetail  `json:"fail"`
+	ResponseHeaders       http.Header `json:"response_headers,omitempty"`
 }
 
 type tokenStats struct {

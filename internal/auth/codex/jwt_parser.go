@@ -1,12 +1,16 @@
 package codex
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
+
+const codexMemberFingerprintPrefix = "codex-member-fp:v1:"
 
 // JWTClaims represents the claims section of a JSON Web Token (JWT).
 // It includes standard claims like issuer, subject, and expiration time, as well as
@@ -99,4 +103,34 @@ func (c *JWTClaims) GetUserEmail() string {
 // It retrieves the unique identifier for the user's ChatGPT account.
 func (c *JWTClaims) GetAccountID() string {
 	return c.CodexAuthInfo.ChatgptAccountID
+}
+
+// MemberFingerprint returns a stable, non-reversible identity for one Codex
+// Business member. The workspace account ID is deliberately excluded because
+// it is shared by every member in the same Business workspace.
+func (c *JWTClaims) MemberFingerprint() string {
+	if c == nil {
+		return ""
+	}
+	identity := ""
+	if memberID := strings.TrimSpace(c.CodexAuthInfo.ChatgptUserID); memberID != "" {
+		identity = "chatgpt_user_id\x00" + memberID
+	} else if issuer, subject := strings.TrimSpace(c.Iss), strings.TrimSpace(c.Sub); issuer != "" && subject != "" {
+		identity = "issuer_sub\x00" + issuer + "\x00" + subject
+	}
+	if identity == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return codexMemberFingerprintPrefix + hex.EncodeToString(digest[:])
+}
+
+// MemberFingerprintFromToken extracts only the opaque member fingerprint from
+// an ID token; malformed or non-JWT values produce an empty result.
+func MemberFingerprintFromToken(token string) string {
+	claims, errParse := ParseJWTToken(strings.TrimSpace(token))
+	if errParse != nil {
+		return ""
+	}
+	return claims.MemberFingerprint()
 }

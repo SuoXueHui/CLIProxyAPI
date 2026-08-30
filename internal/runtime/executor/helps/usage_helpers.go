@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -28,6 +29,7 @@ type UsageReporter struct {
 	alias                   string
 	authID                  string
 	authIndex               string
+	authMemberFingerprint   string
 	authMu                  sync.RWMutex
 	accessTokenHash         string
 	authType                string
@@ -86,6 +88,11 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
+		if strings.EqualFold(strings.TrimSpace(provider), "codex") && auth.Metadata != nil {
+			if idToken, ok := auth.Metadata["id_token"].(string); ok {
+				reporter.authMemberFingerprint = codex.MemberFingerprintFromToken(idToken)
+			}
+		}
 	}
 	return reporter
 }
@@ -323,6 +330,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		APIKey:                  r.apiKey,
 		AuthID:                  r.authID,
 		AuthIndex:               r.authIndex,
+		AuthMemberFingerprint:   r.authMemberFingerprint,
 		AccessTokenSHA256:       r.accessTokenFingerprint(),
 		AuthType:                r.authType,
 		ReasoningEffort:         r.reasoning,

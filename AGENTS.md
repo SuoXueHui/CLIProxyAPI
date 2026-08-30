@@ -55,6 +55,11 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Heartbeats are source watermarks, not requests. They must never include auth identifiers, models, tokens, status codes, or cost and must not enter usage accounting.
 - Keep the heartbeat interval bounded below the refill controller freshness window; disabling the usage queue must stop heartbeat output so consumers fail closed.
 
+## Codex Usage Identity Semantics
+- `chatgpt_account_id` identifies a shared ChatGPT workspace/Space, not an individual Business member. Never use it alone as a per-credential history key.
+- Usage and management projections may expose only an opaque member fingerprint derived from `chatgpt_user_id`, with issuer-scoped `sub` as the compatibility fallback. Never expose the raw member ID.
+- If the member fingerprint is unavailable, downstream usage systems must fall back to the exact auth file plus `auth_index`; they must not fall back to workspace-only aggregation.
+
 ## Code Conventions
 - Keep changes small and simple (KISS)
 - Comments in English only

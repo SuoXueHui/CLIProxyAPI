@@ -2,6 +2,8 @@ package helps
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -11,8 +13,35 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+func TestUsageReporterCapturesCodexMemberFingerprint(t *testing.T) {
+	payload, errMarshal := json.Marshal(map[string]any{
+		"iss": "https://issuer.example",
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_user_id": "member-a",
+		},
+	})
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	idToken := "header." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-test", &cliproxyauth.Auth{
+		ID:       "codex-a",
+		Provider: "codex",
+		Metadata: map[string]any{"id_token": idToken},
+	})
+
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+	if record.AuthMemberFingerprint == "" {
+		t.Fatal("usage record omitted Codex member fingerprint")
+	}
+	if record.AuthMemberFingerprint == "member-a" {
+		t.Fatal("usage record exposed raw Codex member ID")
+	}
+}
 
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)

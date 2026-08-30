@@ -28,6 +28,9 @@ type Record struct {
 	APIKey       string
 	AuthID       string
 	AuthIndex    string
+	// AuthMemberFingerprint identifies a Codex Business member without exposing
+	// the raw ChatGPT user ID to usage consumers.
+	AuthMemberFingerprint string
 	// AccessTokenSHA256 identifies the OAuth token version without exposing the token.
 	AccessTokenSHA256 string
 	AuthType          string

@@ -139,9 +139,11 @@ func TestBuildAuthFileEntryKeepsCodexPlanClaimsUnchanged(t *testing.T) {
 		t.Fatalf("write Codex auth fixture: %v", err)
 	}
 	idToken := testXAIJWT(t, map[string]any{
+		"iss": "https://issuer.example",
 		"https://api.openai.com/auth": map[string]any{
 			"chatgpt_account_id": "acct-test",
 			"chatgpt_plan_type":  "team",
+			"chatgpt_user_id":    "member-test",
 		},
 	})
 	auth := &coreauth.Auth{
@@ -161,6 +163,12 @@ func TestBuildAuthFileEntryKeepsCodexPlanClaimsUnchanged(t *testing.T) {
 	}
 	if got := claims["plan_type"]; got != "team" {
 		t.Fatalf("Codex plan_type = %#v, want team", got)
+	}
+	if got, okFingerprint := claims["chatgpt_member_fingerprint"].(string); !okFingerprint || got == "" || got == "member-test" {
+		t.Fatalf("Codex member fingerprint = %#v", claims["chatgpt_member_fingerprint"])
+	}
+	if _, exposed := claims["chatgpt_user_id"]; exposed {
+		t.Fatalf("Codex claims exposed raw member ID: %#v", claims)
 	}
 	if _, ok := entry["xai_plan_type"]; ok {
 		t.Fatalf("Codex entry unexpectedly contains xai_plan_type: %#v", entry)

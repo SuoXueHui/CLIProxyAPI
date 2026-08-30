@@ -30,22 +30,23 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 
 		plugin := &usageQueuePlugin{}
 		plugin.HandleUsage(ctx, coreusage.Record{
-			Provider:            "openai",
-			ExecutorType:        "KimiExecutor",
-			Model:               "gpt-5.4",
-			Alias:               "client-gpt",
-			APIKey:              "test-key",
-			AuthIndex:           "0",
-			AuthID:              "codex-auth-1",
-			AccessTokenSHA256:   "token-version-hash",
-			AuthType:            "apikey",
-			Source:              "user@example.com",
-			ReasoningEffort:     "medium",
-			ServiceTier:         "auto",
-			ResponseServiceTier: "default",
-			Generate:            coreusage.GenerateFlag(true),
-			RequestedAt:         time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
-			Latency:             1500 * time.Millisecond,
+			Provider:              "openai",
+			ExecutorType:          "KimiExecutor",
+			Model:                 "gpt-5.4",
+			Alias:                 "client-gpt",
+			APIKey:                "test-key",
+			AuthIndex:             "0",
+			AuthID:                "codex-auth-1",
+			AccessTokenSHA256:     "token-version-hash",
+			AuthMemberFingerprint: "codex-member-fp:v1:test",
+			AuthType:              "apikey",
+			Source:                "user@example.com",
+			ReasoningEffort:       "medium",
+			ServiceTier:           "auto",
+			ResponseServiceTier:   "default",
+			Generate:              coreusage.GenerateFlag(true),
+			RequestedAt:           time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+			Latency:               1500 * time.Millisecond,
 			Detail: coreusage.Detail{
 				InputTokens:  10,
 				OutputTokens: 20,
@@ -76,6 +77,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "overdraft_gate_window", "7d")
 		requireStringField(t, payload, "overdraft_cycle_key", "cycle-1")
 		requireStringField(t, payload, "access_token_sha256", "token-version-hash")
+		requireStringField(t, payload, "auth_member_fingerprint", "codex-member-fp:v1:test")
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
 		requireStringField(t, payload, "client_ip", "192.0.2.10")
