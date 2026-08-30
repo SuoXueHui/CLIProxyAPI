@@ -25,11 +25,42 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 
 ## Production CPA Plugin Baseline
 - Production uses the author's unmodified `Mxucc/cpa-account-config-manager` release artifacts; the previous custom fork line is retired.
-- Current production baseline: upstream release `v0.3.1332` for Linux amd64.
+- Current production baseline: verify the active upstream release at runtime; the
+  2026-08 production baseline is `v0.3.1356` for Linux amd64.
 - Production images that load the Linux `.so` plugin must be built with `CGO_ENABLED=1`; do not replace the image binary with a `CGO_ENABLED=0` cross-build. Verify the active binary build settings and plugin registration in an isolated candidate before rollout.
 - Before deployment, verify the release archive against the author's published checksum and keep the active plugin binary plus its SHA256 in the rollback snapshot.
 - After deployment, verify the loaded and registered plugin version, active plugin path, management UI availability, and the production container health checks.
 - Future plugin upgrades should follow the author's upstream releases unless a later project decision explicitly restores a maintained custom fork.
+
+## Production Container And Network Release Rules
+- The final CPA container must be Compose-managed. Do not leave production on a
+  manual `docker run` container after rollout; the canonical production Compose
+  file must contain the active image, port, resource limits, networks, aliases,
+  and stable host mounts.
+- Auth material is authoritative under the stable host directory
+  `/data/apps/cli-proxy-api/auths`. Never delete, rename, or garbage-collect a
+  release directory while a running container still mounts it. Before cleanup,
+  inspect `.Mounts`, verify the container auth-file count, and confirm the
+  replacement container mounts stable `auths`, `plugins`, `data`, and `logs`.
+- Keep exactly one authoritative `cli-proxy-api` alias on the shared
+  `sub2api-access` network. Before switching it, verify DNS resolution from
+  every caller (including NewAPI and Sub2API), remove stale containers that own
+  the alias, and probe the new container directly and through the public Nginx
+  path.
+- Account-level IPv6 egress requires a post-recreate connectivity probe from
+  the actual container namespace to an IPv6-only or dual-stack upstream. A
+  route and assigned address are insufficient: verify TCP/HTTP success and
+  `connection timed out=0`. Remove old containers before reusing their IPv6
+  addresses so stale NDP/MAC mappings cannot black-hole the new container.
+- Preserve `nodad` handling for allocated account IPv6 addresses and keep
+  `CAP_NET_ADMIN`, `iproute2`, and the configured egress prefix in the final
+  Compose definition. Do not test only on the host namespace.
+- After rollout, compare current-window errors with cumulative log counters;
+  historical timeout counts must not be reported as newly introduced failures.
+- Release acceptance must include: active image/version and plugin registration,
+  auth-file count, public root HTTP 200, direct container HTTP 200, caller DNS
+  resolution, IPv6 probe, container `restart=0`/`OOMKilled=false`, and a short
+  usage-event growth window.
 
 ## Architecture
 - `cmd/server/` — Server entrypoint
