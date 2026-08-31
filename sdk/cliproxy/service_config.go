@@ -89,6 +89,12 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		return configCommit{}
 	}
 
+	// Serialize in-memory commits with runtime application. Without this lock a
+	// newer snapshot can replace s.cfg while the previous commit is still
+	// reconciling network-owned state, allowing different subsystems to observe
+	// different configuration generations.
+	s.configRuntimeMu.Lock()
+	defer s.configRuntimeMu.Unlock()
 	s.configUpdateMu.Lock()
 	defer s.configUpdateMu.Unlock()
 

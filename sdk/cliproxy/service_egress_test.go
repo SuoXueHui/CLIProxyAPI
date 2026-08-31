@@ -7,12 +7,36 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
+
+func TestCommitConfigUpdateWaitsForRuntimeApply(t *testing.T) {
+	service := &Service{cfg: &config.Config{}}
+	service.configRuntimeMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		service.commitConfigUpdate(&config.Config{Debug: true})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		service.configRuntimeMu.Unlock()
+		t.Fatal("config commit advanced while a runtime apply held the serialization lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	service.configRuntimeMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("config commit did not resume after the runtime apply lock was released")
+	}
+}
 
 type startupEgressStore struct {
 	auths []*coreauth.Auth
