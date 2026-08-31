@@ -7,36 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
-
-func TestCommitConfigUpdateWaitsForRuntimeApply(t *testing.T) {
-	service := &Service{cfg: &config.Config{}}
-	service.configRuntimeMu.Lock()
-	done := make(chan struct{})
-	go func() {
-		service.commitConfigUpdate(&config.Config{Debug: true})
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		service.configRuntimeMu.Unlock()
-		t.Fatal("config commit advanced while a runtime apply held the serialization lock")
-	case <-time.After(50 * time.Millisecond):
-	}
-	service.configRuntimeMu.Unlock()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("config commit did not resume after the runtime apply lock was released")
-	}
-}
 
 type startupEgressStore struct {
 	auths []*coreauth.Auth
@@ -159,6 +135,38 @@ func TestServiceIPv6EgressIgnoresStaleConfigDuringDelayedAssignment(t *testing.T
 		if !strings.HasPrefix(address, "2001:db8:2:") {
 			t.Fatalf("delayed assignment changed active prefix: %#v", addresses)
 		}
+	}
+}
+
+func TestServiceIPv6EgressRejectsStaleCommitBeforePublication(t *testing.T) {
+	statePath := installFakeIPCommand(t)
+	oldCfg := &config.Config{IPv6Egress: egress.Config{Enabled: true, Prefix: "2001:db8:1::/120", Interface: "eth0"}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	service := &Service{cfg: oldCfg, coreManager: manager}
+	service.handleAuthUpdate(context.Background(), watcher.AuthUpdate{
+		Action: watcher.AuthUpdateActionAdd,
+		ID:     "auth",
+		Auth:   &coreauth.Auth{ID: "auth", Provider: "unknown", Status: coreauth.StatusActive},
+	})
+	before, _ := manager.GetByID("auth")
+
+	service.configUpdateMu.Lock()
+	service.configSequence = 2
+	service.configUpdateMu.Unlock()
+	stale := configCommit{
+		cfg:      &config.Config{IPv6Egress: egress.Config{Enabled: true, Prefix: "2001:db8:2::/120", Interface: "eth0"}},
+		sequence: 1,
+	}
+	if errTransition := service.transitionEgressCommit(context.Background(), stale); errTransition == nil || !strings.Contains(errTransition.Error(), "stale") {
+		t.Fatalf("transitionEgressCommit() error = %v, want stale commit rejection", errTransition)
+	}
+	after, _ := manager.GetByID("auth")
+	if before == nil || after == nil || after.EgressIPv6 != before.EgressIPv6 {
+		t.Fatalf("stale commit changed runtime binding: before=%#v after=%#v", before, after)
+	}
+	addresses := readFakeIPState(t, statePath)
+	if len(addresses) != 1 || !strings.HasPrefix(addresses[0], "2001:db8:1:") {
+		t.Fatalf("stale commit changed active addresses: %#v", addresses)
 	}
 }
 

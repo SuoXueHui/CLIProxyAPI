@@ -89,12 +89,6 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		return configCommit{}
 	}
 
-	// Serialize in-memory commits with runtime application. Without this lock a
-	// newer snapshot can replace s.cfg while the previous commit is still
-	// reconciling network-owned state, allowing different subsystems to observe
-	// different configuration generations.
-	s.configRuntimeMu.Lock()
-	defer s.configRuntimeMu.Unlock()
 	s.configUpdateMu.Lock()
 	defer s.configUpdateMu.Unlock()
 
@@ -167,7 +161,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	// Reconcile account-owned IPv6 addresses before applying the rest of the
 	// runtime config. This also handles disable/prefix changes when no auth
 	// update is emitted by the watcher.
-	if errEgress := s.transitionEgress(ctx, cfg.IPv6Egress); errEgress != nil {
+	if errEgress := s.transitionEgressCommit(ctx, commit); errEgress != nil {
 		log.Errorf("failed to update runtime auth IPv6 egress: %v", errEgress)
 		s.rollbackConfigCommit(commit)
 		return false

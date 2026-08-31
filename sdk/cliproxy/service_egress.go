@@ -147,7 +147,7 @@ func rollbackRuntimeEgress(ctx context.Context, manager *coreauth.Manager, origi
 // transitionEgressLocked builds all candidate addresses and runtime bindings
 // before publishing the replacement controller. Candidate failure leaves the
 // previous controller, addresses, and runtime auth projection untouched.
-func (s *Service) transitionEgressLocked(ctx context.Context, cfg egress.Config) error {
+func (s *Service) transitionEgressLocked(ctx context.Context, cfg egress.Config, commit *configCommit) error {
 	if s == nil || s.coreManager == nil {
 		return nil
 	}
@@ -187,6 +187,21 @@ func (s *Service) transitionEgressLocked(ctx context.Context, cfg egress.Config)
 			}
 		}
 	}
+	commitLocked := false
+	if commit != nil {
+		s.configUpdateMu.Lock()
+		if s.configSequence != commit.sequence {
+			s.configUpdateMu.Unlock()
+			_ = candidate.CloseExcept(oldManaged)
+			return fmt.Errorf("ipv6 egress config commit is stale")
+		}
+		commitLocked = true
+		defer func() {
+			if commitLocked {
+				s.configUpdateMu.Unlock()
+			}
+		}()
+	}
 	originals := make([]*coreauth.Auth, 0, len(auths))
 	for _, current := range auths {
 		if errContext := ctx.Err(); errContext != nil {
@@ -207,6 +222,10 @@ func (s *Service) transitionEgressLocked(ctx context.Context, cfg egress.Config)
 		originals = append(originals, current.Clone())
 	}
 	s.egressState = &egressRuntimeState{controller: candidate}
+	if commitLocked {
+		s.configUpdateMu.Unlock()
+		commitLocked = false
+	}
 	if oldController != nil {
 		if errClose := oldController.CloseExcept(candidate.ManagedAssignments()); errClose != nil {
 			log.WithError(errClose).Warn("failed to remove retired IPv6 egress addresses")
@@ -221,7 +240,16 @@ func (s *Service) transitionEgress(ctx context.Context, cfg egress.Config) error
 	}
 	s.egressMu.Lock()
 	defer s.egressMu.Unlock()
-	return s.transitionEgressLocked(ctx, cfg)
+	return s.transitionEgressLocked(ctx, cfg, nil)
+}
+
+func (s *Service) transitionEgressCommit(ctx context.Context, commit configCommit) error {
+	if s == nil || commit.cfg == nil {
+		return nil
+	}
+	s.egressMu.Lock()
+	defer s.egressMu.Unlock()
+	return s.transitionEgressLocked(ctx, commit.cfg.IPv6Egress, &commit)
 }
 
 func (s *Service) initializeLoadedAuthEgress(ctx context.Context) error {
