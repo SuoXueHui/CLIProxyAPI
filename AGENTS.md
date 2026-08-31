@@ -86,6 +86,22 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Heartbeats are source watermarks, not requests. They must never include auth identifiers, models, tokens, status codes, or cost and must not enter usage accounting.
 - Keep the heartbeat interval bounded below the refill controller freshness window; disabling the usage queue must stop heartbeat output so consumers fail closed.
 
+## Usage Outbox Maintenance
+- Durable outbox compaction is startup-only. `MaintainOutboxAtStartup` runs before the API enables usage publishing and must not be exposed as an online management action that disables a live queue.
+- Storage observability must include the SQLite main file, WAL, and SHM physical sizes; reclaimable bytes are an estimate from the main database freelist.
+- Preserve pending/inflight rows and delivery counters across startup maintenance. A maintenance failure may delay reclamation but must not delete or acknowledge usage records.
+
+## IPv6 Egress Lifecycle
+- Loaded file/OAuth auths must receive their runtime IPv6 binding before the API starts accepting requests.
+- Incremental auth updates must use the active long-lived egress controller; never carry an earlier config snapshot into address allocation.
+- Config changes must stage and verify a candidate controller plus all runtime auth bindings before publication. On candidate failure, keep the previous config, controller, addresses, and runtime bindings active.
+- The process may adopt healthy addresses already present in its own network namespace, but it cannot provide cross-container ownership. Deployment must remove the old container before the replacement reuses stable account addresses.
+- Soft config commits remain non-blocking during unrelated runtime persistence. Use generation checks at egress publication instead of holding the global config commit mutex across slow runtime work.
+
+## Adaptive Auth Configuration
+- File-based config omitting `routing.adaptive-auth` keeps the active compatibility default. Programmatic callers that want the active defaults should use `DefaultAdaptiveAuthConfig`; a zero-value programmatic config represents disabled scheduling.
+- Apply adaptive soft penalties only after hard availability filtering. Soft state must never be able to manufacture `auth_unavailable` or HTTP 503.
+
 ## Codex Usage Identity Semantics
 - `chatgpt_account_id` identifies a shared ChatGPT workspace/Space, not an individual Business member. Never use it alone as a per-credential history key.
 - Usage and management projections may expose only an opaque member fingerprint derived from `chatgpt_user_id`, with issuer-scoped `sub` as the compatibility fallback. Never expose the raw member ID.
