@@ -36,10 +36,10 @@
 
 ### Usage Outbox
 
-- Status now exposes SQLite storage and reclaimable bytes.
-- `CompactOutbox(ctx)` requires durable mode with the queue disabled, runs `VACUUM`, checks WAL checkpoint busy state, truncates the WAL, and preserves pending/inflight records and counters.
+- Status now exposes physical SQLite main/WAL/SHM storage and reclaimable main-database bytes.
+- `MaintainOutboxAtStartup(ctx)` runs before usage publishing is enabled. It applies the 64 MiB/50% reclaim threshold, runs `VACUUM`, verifies/truncates the WAL checkpoint, and preserves pending/inflight records and counters.
 - Durable and memory enqueue paths recheck queue enablement inside their serialization lock so a disable cannot admit or publish a late event.
-- No HTTP/management compaction route was added; compaction remains an explicit offline Go maintenance operation.
+- No HTTP/management compaction route exists; runtime callers cannot pause a live queue for maintenance.
 
 ### Weekly Overdraft
 
@@ -49,7 +49,7 @@
 ## Remaining Boundaries
 
 - IPv6 cannot enforce exclusive ownership between containers from one process. Release procedures must remove the old container before reusing stable account addresses.
-- Outbox compaction intentionally requires a disabled queue and is not safe as an online management action.
+- Outbox compaction remains startup-only and may extend startup time when a large file crosses the maintenance threshold.
 - No production system was contacted during implementation.
 
 ## Independent Integration Review
@@ -70,3 +70,9 @@
 - Outbox compaction was moved to `MaintainOutboxAtStartup`: no online disable window exists. The service invokes it after durable storage opens and before the API enables usage publishing. Default maintenance requires at least 64 MiB reclaimable and 50% free pages.
 - Outbox storage status and maintenance results now use physical main database, WAL, and SHM sizes; reclaimable bytes remain the SQLite freelist estimate.
 - The runtime `CompactOutbox` entry was removed, so online callers cannot accidentally discard usage during maintenance.
+
+## Final State
+
+- Local `master` contains the verified fixes and remains ahead of `fork/master`; nothing was pushed or published.
+- The repair branch points to the same commit as local `master` and is retained for traceability.
+- Clean detached-worktree full tests and focused race tests passed on the merged result.

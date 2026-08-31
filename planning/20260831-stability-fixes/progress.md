@@ -26,3 +26,7 @@
 - Clean detached-worktree `go test ./... -count=1` passed at `8926566a`.
 - Fresh race tests passed for config, adaptive auth, egress, outbox, weekly-overdraft helpers, and SDK service. The repository-wide executor race still has an unrelated existing Antigravity test-global race, so executor coverage remains focused on the modified helper package.
 - Required server build and `git diff --check` pass. `go vet ./...` remains limited to the five previously documented upstream warnings in request logging and plugin callbacks.
+- Fast-forward merged `codex/stability-fixes-20260831` into local `master`; no remote push, tag, image build, or online deployment was performed.
+- Post-merge clean detached-worktree `go test ./... -count=1` passed on local `master`.
+- Post-merge race tests passed for config, adaptive auth, egress, outbox, weekly-overdraft helpers, and SDK service; required build and diff checks passed.
+- Task is complete in an unpublished state and waits for a later explicit release instruction.

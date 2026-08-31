@@ -19,7 +19,7 @@ Fix the confirmed stability defects from the seven-customization review on an is
 - [complete] Add safe usage outbox maintenance/compaction handling without changing delivery semantics.
 - [complete] Re-review weekly-overdraft gate behavior and decide the smallest safe code/config guard.
 - [complete] Resolve integration-review findings for startup ordering, stale config updates, atomic egress transitions, and lossless outbox maintenance.
-- [in_progress] Run focused/race/full tests, vet, build, merge local `master`, verify merged result, and stop before publication.
+- [complete] Run focused/race/full tests, vet, build, merge local `master`, verify merged result, and stop before publication.
 
 ## Non-goals
 
@@ -36,4 +36,5 @@ Fix the confirmed stability defects from the seven-customization review on an is
 | Weekly-overdraft helper tests failed after a proposed 25% core validation cap | 1 | Rejected the incompatible cap; retained explicit config semantics and kept only gate-state pruning. |
 | Package-wide management race run hit existing parallel `gin.SetMode` race | 1 | Verified affected outbox/API tests separately; keep the known unrelated race as a baseline exception. |
 | First feature commit passed tests but independent review found lifecycle gaps | 1 | Keep it isolated on the repair branch, add RED lifecycle/failure tests, and do not merge until the review is clean. |
+| Global config-runtime lock broke the non-blocking commit contract | 1 | Removed the broad lock and added an egress-only generation check immediately before runtime publication. |
 | Global config-runtime lock broke the existing non-blocking commit contract | 1 | Removed the broad lock and added a generation check only around egress runtime publication. |
