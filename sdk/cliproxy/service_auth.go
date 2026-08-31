@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
@@ -104,15 +103,6 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	}
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
-	var egressAllocator *egress.Allocator
-	if cfg.IPv6Egress.Enabled {
-		var errEgress error
-		egressAllocator, errEgress = egress.NewAllocator(cfg.IPv6Egress)
-		if errEgress != nil {
-			log.Errorf("invalid ipv6-egress configuration while applying auth updates: %v", errEgress)
-			return
-		}
-	}
 	tasks := make([]modelRegistrationTask, 0, len(updates))
 	needsPluginSync := false
 	needsAliasRebuild := false
@@ -122,18 +112,17 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			if update.Auth == nil || update.Auth.ID == "" {
 				continue
 			}
-			if egressAllocator != nil && egressAllocator.Enabled() {
-				ip, errResolve := egressAllocator.Resolve(update.Auth.ID)
+			// EgressIPv6 is runtime-owned state. Never trust a persisted or
+			// externally supplied value when the current config disables it.
+			update.Auth = update.Auth.Clone()
+			update.Auth.EgressIPv6 = ""
+			if cfg.IPv6Egress.Enabled {
+				ip, errResolve := s.assignEgressIPv6(cfg.IPv6Egress, update.Auth.ID)
 				if errResolve != nil {
 					log.Errorf("failed to resolve IPv6 egress for auth %q: %v", update.Auth.ID, errResolve)
 					continue
 				}
 				if ip != nil {
-					if errEnsure := egress.EnsureAddress(cfg.IPv6Egress, ip); errEnsure != nil {
-						log.Errorf("failed to add IPv6 egress address for auth %q: %v", update.Auth.ID, errEnsure)
-						continue
-					}
-					update.Auth = update.Auth.Clone()
 					update.Auth.EgressIPv6 = ip.String()
 				}
 			}
@@ -160,6 +149,9 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 				continue
 			}
 			s.applyCoreAuthRemoval(registrationCtx, id)
+			if errRelease := s.releaseEgressIPv6(cfg.IPv6Egress, id); errRelease != nil {
+				log.Errorf("failed to release IPv6 egress for auth %q: %v", id, errRelease)
+			}
 			needsAliasRebuild = true
 		default:
 			log.Debugf("received unknown auth update action: %v", update.Action)

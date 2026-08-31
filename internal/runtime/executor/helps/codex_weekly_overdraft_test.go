@@ -34,6 +34,10 @@ func weeklyOverdraftTestRequest(body []byte) CodexWeeklyOverdraftRequest {
 	}
 }
 
+func resetCodexWeeklyOverdraftGatesForTest() {
+	codexWeeklyOverdraftGates = sync.Map{}
+}
+
 func TestApplyCodexWeeklyOverdraftDisabledReturnsOriginalBody(t *testing.T) {
 	body := []byte(`{"input":[{"type":"message","role":"user","content":"hello"}]}`)
 	req := weeklyOverdraftTestRequest(body)
@@ -151,6 +155,22 @@ func TestCodexWeeklyOverdraftGatePropagatesCycleEvidence(t *testing.T) {
 	_, decision := ApplyCodexWeeklyOverdraftForRequest(&config.Config{Codex: config.CodexConfig{WeeklyOverdraft: cfg}}, &cliproxyauth.Auth{ID: "cycle-auth", Provider: "codex", Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}, cliproxyexecutor.Request{Payload: body, Metadata: metadata}, body)
 	if decision.GateWindow != "7d" || decision.CycleKey != "reset:123" {
 		t.Fatalf("gate evidence was not propagated: %#v", decision)
+	}
+}
+
+func TestCodexWeeklyOverdraftGatePrunesExpiredEvidenceAcrossAccounts(t *testing.T) {
+	resetCodexWeeklyOverdraftGatesForTest()
+	t.Cleanup(resetCodexWeeklyOverdraftGatesForTest)
+
+	staleKey := "stale-auth\x005h"
+	codexWeeklyOverdraftGates.Store(staleKey, codexWeeklyOverdraftGateEvidence{openedAt: time.Now().Add(-7 * time.Hour)})
+	RecordCodexWeeklyOverdraftQuotaEvidence("fresh-auth", "5h", http.StatusTooManyRequests, nil, []byte(`{"error":{"code":"usage_limit_reached"}}`))
+
+	if _, staleExists := codexWeeklyOverdraftGates.Load(staleKey); staleExists {
+		t.Fatal("expired gate evidence from another auth was not pruned")
+	}
+	if _, freshExists := codexWeeklyOverdraftGates.Load("fresh-auth\x005h"); !freshExists {
+		t.Fatal("fresh gate evidence was not retained")
 	}
 }
 

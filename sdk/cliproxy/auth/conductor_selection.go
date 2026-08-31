@@ -1282,16 +1282,16 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	// Apply the volatile adaptive filter before handing candidates to either
-	// the plugin scheduler or the configured selector. Hard availability and
-	// session pinning remain authoritative in the later availability pass.
-	candidates = m.scheduler.filterAdaptiveCandidates(provider, model, candidates, pinnedAuthID)
 	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, provider, model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
 		return nil, nil, errAvailable
 	}
+	// Soft penalties only narrow hard-available candidates. Filtering each view
+	// preserves session-affinity priority semantics and guarantees fail-open.
+	available = m.scheduler.filterAdaptiveCandidates(provider, model, available, pinnedAuthID)
+	selectorAuths = m.scheduler.filterAdaptiveCandidates(provider, model, selectorAuths, pinnedAuthID)
 	m.mu.RUnlock()
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
@@ -1619,13 +1619,15 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	candidates = m.scheduler.filterAdaptiveCandidates("mixed", model, candidates, pinnedAuthID)
 	available, selectorAuths, errAvailable := m.availableAuthsForSelector(selector, candidates, "mixed", model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
 		return nil, nil, "", errAvailable
 	}
+	// Mixed-provider soft penalties follow the same hard-availability boundary.
+	available = m.scheduler.filterAdaptiveCandidates("mixed", model, available, pinnedAuthID)
+	selectorAuths = m.scheduler.filterAdaptiveCandidates("mixed", model, selectorAuths, pinnedAuthID)
 	m.mu.RUnlock()
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)

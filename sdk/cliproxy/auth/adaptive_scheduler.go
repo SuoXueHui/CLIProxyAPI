@@ -51,7 +51,7 @@ type adaptiveAuthLease struct {
 
 func newAdaptiveSchedulerRuntime() adaptiveSchedulerRuntime {
 	return adaptiveSchedulerRuntime{
-		config: internalconfig.AdaptiveAuthConfig{}.WithDefaults(),
+		config: internalconfig.DefaultAdaptiveAuthConfig(),
 		health: make(map[adaptiveAuthKey]*adaptiveAuthStats),
 		load:   make(map[adaptiveLoadKey]int),
 		last:   make(map[string]string),
@@ -92,7 +92,7 @@ func (s *authScheduler) setAdaptiveConfig(cfg internalconfig.AdaptiveAuthConfig)
 
 func (s *authScheduler) adaptiveConfig() internalconfig.AdaptiveAuthConfig {
 	if s == nil {
-		return internalconfig.AdaptiveAuthConfig{}.WithDefaults()
+		return internalconfig.DefaultAdaptiveAuthConfig()
 	}
 	s.adaptive.mu.Lock()
 	defer s.adaptive.mu.Unlock()

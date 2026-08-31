@@ -43,6 +43,15 @@ type QueueStatus struct {
 	LeaseExpired     int64   `json:"lease_expired"`
 	Dropped          int64   `json:"dropped"`
 	OldestAgeSeconds float64 `json:"oldest_age_seconds"`
+	StorageBytes     int64   `json:"storage_bytes"`
+	ReclaimableBytes int64   `json:"reclaimable_bytes"`
+}
+
+// OutboxMaintenanceResult reports database pages reclaimed by an explicit maintenance run.
+type OutboxMaintenanceResult struct {
+	BeforeBytes    int64 `json:"before_bytes"`
+	AfterBytes     int64 `json:"after_bytes"`
+	ReclaimedBytes int64 `json:"reclaimed_bytes"`
 }
 
 type durableOutbox struct {
@@ -149,6 +158,66 @@ func (o *durableOutbox) close() error {
 		return nil
 	}
 	return o.db.Close()
+}
+
+func (o *durableOutbox) storageBytes(ctx context.Context) (int64, error) {
+	if o == nil || o.db == nil {
+		return 0, errOutboxUnavailable
+	}
+	var pageCount int64
+	if errPageCount := o.db.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pageCount); errPageCount != nil {
+		return 0, fmt.Errorf("read usage outbox page count: %w", errPageCount)
+	}
+	var pageSize int64
+	if errPageSize := o.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); errPageSize != nil {
+		return 0, fmt.Errorf("read usage outbox page size: %w", errPageSize)
+	}
+	return pageCount * pageSize, nil
+}
+
+func (o *durableOutbox) reclaimableBytes(ctx context.Context) (int64, error) {
+	if o == nil || o.db == nil {
+		return 0, errOutboxUnavailable
+	}
+	var freePages int64
+	if errFreePages := o.db.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&freePages); errFreePages != nil {
+		return 0, fmt.Errorf("read usage outbox free page count: %w", errFreePages)
+	}
+	var pageSize int64
+	if errPageSize := o.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize); errPageSize != nil {
+		return 0, fmt.Errorf("read usage outbox page size: %w", errPageSize)
+	}
+	return freePages * pageSize, nil
+}
+
+func (o *durableOutbox) compact(ctx context.Context) (OutboxMaintenanceResult, error) {
+	result := OutboxMaintenanceResult{}
+	if o == nil || o.db == nil {
+		return result, errOutboxUnavailable
+	}
+	beforeBytes, errBefore := o.storageBytes(ctx)
+	if errBefore != nil {
+		return result, errBefore
+	}
+	result.BeforeBytes = beforeBytes
+	if _, errVacuum := o.db.ExecContext(ctx, `VACUUM`); errVacuum != nil {
+		return result, fmt.Errorf("compact usage outbox: %w", errVacuum)
+	}
+	// WAL mode keeps compacted pages in the log until checkpointed; truncate it in the same offline window.
+	var checkpointBusy, checkpointLog, checkpointCheckpointed int64
+	if errCheckpoint := o.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&checkpointBusy, &checkpointLog, &checkpointCheckpointed); errCheckpoint != nil {
+		return result, fmt.Errorf("checkpoint compacted usage outbox: %w", errCheckpoint)
+	}
+	if checkpointBusy != 0 {
+		return result, fmt.Errorf("checkpoint compacted usage outbox: database is busy (log=%d checkpointed=%d)", checkpointLog, checkpointCheckpointed)
+	}
+	afterBytes, errAfter := o.storageBytes(ctx)
+	if errAfter != nil {
+		return result, errAfter
+	}
+	result.AfterBytes = afterBytes
+	result.ReclaimedBytes = max(0, beforeBytes-afterBytes)
+	return result, nil
 }
 
 func (o *durableOutbox) enqueue(payload []byte) (string, error) {
@@ -355,7 +424,20 @@ FROM usage_outbox`, now.UnixNano(), now.UnixNano(), now.UnixNano()).Scan(&status
 			status.LeaseExpired = value
 		}
 	}
-	return status, rows.Err()
+	if errRows := rows.Err(); errRows != nil {
+		return status, errRows
+	}
+	storageBytes, errStorage := o.storageBytes(context.Background())
+	if errStorage != nil {
+		return status, errStorage
+	}
+	status.StorageBytes = storageBytes
+	reclaimableBytes, errReclaimable := o.reclaimableBytes(context.Background())
+	if errReclaimable != nil {
+		return status, errReclaimable
+	}
+	status.ReclaimableBytes = reclaimableBytes
+	return status, nil
 }
 
 // ConfigureOutbox swaps the usage persistence backend without deleting existing data.
@@ -425,6 +507,25 @@ func CloseOutbox() error {
 	return durable.close()
 }
 
+// CompactOutbox reclaims unused SQLite pages during an explicit disabled-queue maintenance window.
+func CompactOutbox(ctx context.Context) (OutboxMaintenanceResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runtimeOutbox.mu.Lock()
+	defer runtimeOutbox.mu.Unlock()
+	if Enabled() {
+		return OutboxMaintenanceResult{}, errors.New("usage outbox compaction requires the queue to be disabled")
+	}
+	if runtimeOutbox.mode != "durable" {
+		return OutboxMaintenanceResult{}, errors.New("usage outbox compaction requires durable mode")
+	}
+	if runtimeOutbox.durable == nil {
+		return OutboxMaintenanceResult{}, errOutboxUnavailable
+	}
+	return runtimeOutbox.durable.compact(ctx)
+}
+
 // EnqueueWithError persists a usage payload before subscriber notification.
 func EnqueueWithError(payload []byte) error {
 	if !Enabled() || len(payload) == 0 {
@@ -435,6 +536,11 @@ func EnqueueWithError(payload []byte) error {
 		return nil
 	}
 	runtimeOutbox.mu.Lock()
+	// Recheck after taking the runtime lock so a maintenance disable cannot race a stale producer.
+	if !Enabled() {
+		runtimeOutbox.mu.Unlock()
+		return nil
+	}
 	durable := runtimeOutbox.durable
 	mode := runtimeOutbox.mode
 	lastErr := runtimeOutbox.lastErr
@@ -459,7 +565,9 @@ func EnqueueWithError(payload []byte) error {
 		runtimeOutbox.mu.Unlock()
 	} else {
 		runtimeOutbox.mu.Unlock()
-		global.enqueue(payload)
+		if !global.enqueue(payload) {
+			return nil
+		}
 		runtimeOutbox.produced.Add(1)
 	}
 	global.publishToSubscribers(payload)

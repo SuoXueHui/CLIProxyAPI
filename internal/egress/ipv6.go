@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net"
 	"os/exec"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,11 @@ type Config struct {
 	Interface string            `yaml:"interface,omitempty" json:"interface,omitempty"`
 	Manual    map[string]string `yaml:"manual,omitempty" json:"manual,omitempty"`
 }
+
+// Address ownership is exclusive to one network namespace. The nodad flag only
+// disables kernel duplicate-address detection; it is not a lease or a
+// blue/green ownership protocol. Operators must remove an address from the old
+// container before a replacement container starts using the same prefix.
 
 // ParseIPv6Prefix parses and canonicalizes an IPv6 CIDR prefix.
 // IPv4-mapped addresses and bare addresses without a prefix length are
@@ -133,11 +139,121 @@ func NewAllocator(cfg Config) (*Allocator, error) {
 	return a, nil
 }
 
-// EnsureAddress adds an allocated IPv6 to the configured interface inside the
-// CPA network namespace. Docker assigns only one address to a container; this
-// step makes additional per-account addresses bindable by net.Dialer. Existing
-// addresses are treated as success so hot reloads remain idempotent.
+// EnsureAddress adds or repairs an allocated IPv6 on the configured interface
+// inside the CPA network namespace. Healthy existing addresses are left
+// untouched so hot reloads remain lossless. Tentative or DAD-failed addresses
+// are replaced with nodad and verified before they can be used by net.Dialer.
 func EnsureAddress(cfg Config, ip net.IP) error {
+	_, err := ensureAddress(cfg, ip)
+	return err
+}
+
+func ensureAddress(cfg Config, ip net.IP) (bool, error) {
+	if !cfg.Enabled || ip == nil {
+		return false, nil
+	}
+	network, err := ParseIPv6Prefix(cfg.Prefix)
+	if err != nil {
+		return false, err
+	}
+	if !network.Contains(ip) {
+		return false, fmt.Errorf("IPv6 egress address %s is outside prefix %s", ip, network.String())
+	}
+	iface := strings.TrimSpace(cfg.Interface)
+	if iface == "" {
+		iface = interfaceForPrefix(network)
+	}
+	prefixBits, _ := network.Mask.Size()
+	address := ip.String() + "/" + strconv.Itoa(prefixBits)
+	state, errState := readAddressState(iface, ip)
+	if errState != nil {
+		return false, errState
+	}
+	if state.exists && !state.unusable() {
+		return false, nil
+	}
+	// Docker bridge interfaces can retain tentative or dadfailed state after a
+	// failed handoff. replace is idempotent for both absent and existing
+	// allocator-owned addresses, while nodad prevents a new DAD cycle.
+	if errReplace := runIP("replace IPv6 egress address", "-6", "addr", "replace", address, "dev", iface, "nodad"); errReplace != nil {
+		return false, errReplace
+	}
+	state, errState = readAddressState(iface, ip)
+	if errState != nil {
+		return false, errState
+	}
+	if state.exists && !state.unusable() {
+		return true, nil
+	}
+	if state.unusable() {
+		// Some kernels retain failed DAD state across replace. The address is
+		// already unusable, so delete and recreate it before the final check.
+		if errDelete := runIP("delete unusable IPv6 egress address", "-6", "addr", "del", address, "dev", iface); errDelete != nil {
+			return false, errDelete
+		}
+		if errAdd := runIP("re-add IPv6 egress address", "-6", "addr", "add", address, "dev", iface, "nodad"); errAdd != nil {
+			return false, errAdd
+		}
+		state, errState = readAddressState(iface, ip)
+		if errState != nil {
+			return false, errState
+		}
+	}
+	if !state.exists {
+		return false, fmt.Errorf("IPv6 egress address %s is absent after configuration on %s", ip, iface)
+	}
+	if state.unusable() {
+		return false, fmt.Errorf("IPv6 egress address %s remains %s on %s", ip, strings.Join(state.badFlags, ","), iface)
+	}
+	return true, nil
+}
+
+type addressState struct {
+	exists   bool
+	badFlags []string
+}
+
+func (s addressState) unusable() bool { return len(s.badFlags) > 0 }
+
+func readAddressState(iface string, target net.IP) (addressState, error) {
+	cmd := exec.Command("ip", "-6", "-o", "addr", "show", "dev", iface)
+	output, errRun := cmd.CombinedOutput()
+	if errRun != nil {
+		return addressState{}, fmt.Errorf("inspect IPv6 egress addresses on %s: %w (%s)", iface, errRun, strings.TrimSpace(string(output)))
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		for index, field := range fields {
+			if field != "inet6" || index+1 >= len(fields) {
+				continue
+			}
+			ip, _, errCIDR := net.ParseCIDR(fields[index+1])
+			if errCIDR != nil || !ip.Equal(target) {
+				continue
+			}
+			state := addressState{exists: true}
+			for _, flag := range fields[index+2:] {
+				switch strings.ToLower(flag) {
+				case "tentative", "dadfailed":
+					state.badFlags = append(state.badFlags, strings.ToLower(flag))
+				}
+			}
+			return state, nil
+		}
+	}
+	return addressState{}, nil
+}
+
+func runIP(action string, args ...string) error {
+	cmd := exec.Command("ip", args...)
+	output, errRun := cmd.CombinedOutput()
+	if errRun != nil {
+		return fmt.Errorf("%s: %w (%s)", action, errRun, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func removeAddress(cfg Config, ip net.IP) error {
 	if !cfg.Enabled || ip == nil {
 		return nil
 	}
@@ -152,21 +268,210 @@ func EnsureAddress(cfg Config, ip net.IP) error {
 	if iface == "" {
 		iface = interfaceForPrefix(network)
 	}
+	state, errState := readAddressState(iface, ip)
+	if errState != nil {
+		return errState
+	}
+	if !state.exists {
+		return nil
+	}
 	prefixBits, _ := network.Mask.Size()
 	address := ip.String() + "/" + strconv.Itoa(prefixBits)
-	// Docker bridge interfaces can report duplicate-address detection failures
-	// when an old CPA container and a replacement briefly share the prefix.
-	// These addresses are allocator-owned and intentionally unique, so disable
-	// DAD to keep them bindable during blue/green container handoffs.
-	cmd := exec.Command("ip", "-6", "addr", "add", address, "dev", iface, "nodad")
-	if output, errRun := cmd.CombinedOutput(); errRun != nil {
-		outputLower := strings.ToLower(string(output))
-		if strings.Contains(outputLower, "file exists") || strings.Contains(outputLower, "address already assigned") {
-			return nil
-		}
-		return fmt.Errorf("add IPv6 egress address %s on %s: %w (%s)", ip, iface, errRun, strings.TrimSpace(string(output)))
+	return runIP("remove IPv6 egress address", "-6", "addr", "del", address, "dev", iface)
+}
+
+type addressManager interface {
+	Ensure(Config, net.IP) (bool, error)
+	Remove(Config, net.IP) error
+}
+
+type systemAddressManager struct{}
+
+func (systemAddressManager) Ensure(cfg Config, ip net.IP) (bool, error) {
+	return ensureAddress(cfg, ip)
+}
+func (systemAddressManager) Remove(cfg Config, ip net.IP) error { return removeAddress(cfg, ip) }
+
+// Controller owns one process-local allocator and the addresses successfully
+// attached through it. Reusing this owner across incremental auth updates keeps
+// collision tracking intact. Reconciliation removes only addresses recorded by
+// this controller; Docker-assigned and unrelated manual addresses are never
+// discovered or garbage-collected. This process-local ownership still requires
+// deployment-level exclusion between multiple containers.
+type Controller struct {
+	mu        sync.Mutex
+	cfg       Config
+	allocator *Allocator
+	managed   map[string]net.IP
+	addresses addressManager
+}
+
+// NewController creates a long-lived process owner for IPv6 egress state.
+func NewController(cfg Config) (*Controller, error) {
+	return newController(cfg, systemAddressManager{})
+}
+
+func newController(cfg Config, addresses addressManager) (*Controller, error) {
+	if addresses == nil {
+		addresses = systemAddressManager{}
 	}
+	allocator, err := NewAllocator(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Controller{
+		cfg:       cloneConfig(cfg),
+		allocator: allocator,
+		managed:   make(map[string]net.IP),
+		addresses: addresses,
+	}, nil
+}
+
+// Configure keeps the current allocator for an equivalent configuration and
+// otherwise releases every address owned by it before installing fresh state.
+// The replacement configuration is validated before any address is touched.
+func (c *Controller) Configure(cfg Config) error {
+	if c == nil {
+		return nil
+	}
+	allocator, err := NewAllocator(cfg)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if configEqual(c.cfg, cfg) {
+		return nil
+	}
+	ids := sortedAssignmentIDs(c.managed)
+	for _, authID := range ids {
+		if errRemove := c.addresses.Remove(c.cfg, c.managed[authID]); errRemove != nil {
+			return fmt.Errorf("release IPv6 egress for auth %q during reconfiguration: %w", authID, errRemove)
+		}
+	}
+	// Keep the old ownership map intact until every removal succeeds. A partial
+	// network failure can then be retried without forgetting an address that may
+	// still be present in the namespace.
+	for _, authID := range ids {
+		delete(c.managed, authID)
+		c.allocator.Release(authID)
+	}
+	c.cfg = cloneConfig(cfg)
+	c.allocator = allocator
 	return nil
+}
+
+// Assign resolves and attaches the stable address for authID.
+func (c *Controller) Assign(authID string) (net.IP, error) {
+	if c == nil {
+		return nil, nil
+	}
+	authID = strings.TrimSpace(authID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.allocator == nil || !c.allocator.Enabled() {
+		return nil, nil
+	}
+	ip, err := c.allocator.Resolve(authID)
+	if err != nil || ip == nil {
+		return ip, err
+	}
+	owned, errEnsure := c.addresses.Ensure(c.cfg, ip)
+	if errEnsure != nil {
+		return nil, errEnsure
+	}
+	if owned {
+		c.managed[authID] = cloneIP(ip)
+	}
+	return cloneIP(ip), nil
+}
+
+// Release removes an address only when this controller previously attached it.
+func (c *Controller) Release(authID string) error {
+	if c == nil {
+		return nil
+	}
+	authID = strings.TrimSpace(authID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ip, owned := c.managed[authID]; owned {
+		if errRemove := c.addresses.Remove(c.cfg, ip); errRemove != nil {
+			return errRemove
+		}
+		delete(c.managed, authID)
+		c.allocator.Release(authID)
+	}
+	// A healthy address discovered after process restart is not safe to remove,
+	// but its allocator reservation must remain while it is still present in the
+	// namespace. Otherwise a later collision could assign that address to a
+	// different auth even though the original kernel address was retained.
+	return nil
+}
+
+// Lookup returns only an address that this controller successfully attached.
+func (c *Controller) Lookup(authID string) (net.IP, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ip, ok := c.managed[strings.TrimSpace(authID)]
+	return cloneIP(ip), ok
+}
+
+func cloneConfig(cfg Config) Config {
+	clone := cfg
+	if cfg.Manual != nil {
+		clone.Manual = make(map[string]string, len(cfg.Manual))
+		for authID, ip := range cfg.Manual {
+			clone.Manual[authID] = ip
+		}
+	}
+	return clone
+}
+
+func configEqual(left, right Config) bool {
+	return reflect.DeepEqual(normalizeConfig(left), normalizeConfig(right))
+}
+
+func normalizeConfig(cfg Config) Config {
+	if !cfg.Enabled {
+		return Config{}
+	}
+	normalized := cloneConfig(cfg)
+	normalized.Mode = strings.ToLower(strings.TrimSpace(normalized.Mode))
+	if normalized.Mode == "" {
+		normalized.Mode = ModeAuto
+	}
+	normalized.Interface = strings.TrimSpace(normalized.Interface)
+	if network, err := ParseIPv6Prefix(normalized.Prefix); err == nil {
+		normalized.Prefix = network.String()
+	} else {
+		normalized.Prefix = strings.TrimSpace(normalized.Prefix)
+	}
+	if len(normalized.Manual) == 0 {
+		normalized.Manual = nil
+		return normalized
+	}
+	manual := make(map[string]string, len(normalized.Manual))
+	for authID, rawIP := range normalized.Manual {
+		ip := net.ParseIP(strings.TrimSpace(rawIP))
+		if ip != nil {
+			rawIP = ip.String()
+		}
+		manual[strings.TrimSpace(authID)] = strings.TrimSpace(rawIP)
+	}
+	normalized.Manual = manual
+	return normalized
+}
+
+func sortedAssignmentIDs(assignments map[string]net.IP) []string {
+	ids := make([]string, 0, len(assignments))
+	for authID := range assignments {
+		ids = append(ids, authID)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // interfaceForPrefix finds the interface that already owns an address inside

@@ -1,43 +1,71 @@
 package egress
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 )
 
-func TestEnsureAddressTreatsAlreadyAssignedAsSuccess(t *testing.T) {
-	if runtimeGOOS := os.Getenv("GOOS"); runtimeGOOS != "" && runtimeGOOS != "linux" {
-		t.Skip("fake ip command test targets Linux command semantics")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ip")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' 'RTNETLINK answers: Address already assigned' >&2\nexit 2\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	originalPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
-	if err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42")); err != nil {
-		t.Fatalf("EnsureAddress() error = %v, want nil for an already assigned address", err)
-	}
-}
-
-func TestEnsureAddressDisablesDADForDockerBridgeAddress(t *testing.T) {
+func TestEnsureAddressKeepsHealthyExistingAddress(t *testing.T) {
 	if runtimeGOOS := os.Getenv("GOOS"); runtimeGOOS != "" && runtimeGOOS != "linux" {
 		t.Skip("fake ip command test targets Linux command semantics")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ip")
 	argsPath := filepath.Join(dir, "args")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$IP_ARGS_FILE\"\n"), 0o700); err != nil {
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$IP_ARGS_FILE\"\n" +
+		"printf '%s\\n' '2: eth0    inet6 2001:db8::42/64 scope global nodad'\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	originalPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
 	t.Setenv("IP_ARGS_FILE", argsPath)
+	if err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42")); err != nil {
+		t.Fatalf("EnsureAddress() error = %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(args)), "-6 -o addr show dev eth0"; got != want {
+		t.Fatalf("ip invocations = %q, want only health check %q", got, want)
+	}
+}
+
+func TestEnsureAddressRepairsDADFailedAddressWithNoDAD(t *testing.T) {
+	if runtimeGOOS := os.Getenv("GOOS"); runtimeGOOS != "" && runtimeGOOS != "linux" {
+		t.Skip("fake ip command test targets Linux command semantics")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ip")
+	argsPath := filepath.Join(dir, "args")
+	statePath := filepath.Join(dir, "state")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$IP_ARGS_FILE\"\n" +
+		"case \"$*\" in\n" +
+		"  *'addr show'*)\n" +
+		"    if [ -f \"$IP_STATE_FILE\" ]; then\n" +
+		"      printf '%s\\n' '2: eth0    inet6 2001:db8::42/64 scope global nodad'\n" +
+		"    else\n" +
+		"      printf '%s\\n' '2: eth0    inet6 2001:db8::42/64 scope global tentative dadfailed'\n" +
+		"    fi\n" +
+		"    ;;\n" +
+		"  *'addr replace'*) touch \"$IP_STATE_FILE\" ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
+	t.Setenv("IP_ARGS_FILE", argsPath)
+	t.Setenv("IP_STATE_FILE", statePath)
 
 	if err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42")); err != nil {
 		t.Fatalf("EnsureAddress() error = %v", err)
@@ -46,9 +74,212 @@ func TestEnsureAddressDisablesDADForDockerBridgeAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fake ip arguments: %v", err)
 	}
-	want := "-6 addr add 2001:db8::42/64 dev eth0 nodad"
-	if got := strings.Join(strings.Fields(string(args)), " "); got != want {
-		t.Fatalf("ip arguments = %q, want %q", got, want)
+	want := []string{
+		"-6 -o addr show dev eth0",
+		"-6 addr replace 2001:db8::42/64 dev eth0 nodad",
+		"-6 -o addr show dev eth0",
+	}
+	got := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ip invocations = %#v, want %#v", got, want)
+	}
+}
+
+func TestEnsureAddressRejectsAddressThatRemainsTentative(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ip")
+	script := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  *'addr show'*) printf '%s\\n' '2: eth0 inet6 2001:db8::42/64 scope global tentative' ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42"))
+	if err == nil || !strings.Contains(err.Error(), "tentative") {
+		t.Fatalf("EnsureAddress() error = %v, want tentative state error", err)
+	}
+}
+
+type fakeAddressManager struct {
+	ensured []string
+	removed []string
+	err     error
+	owned   bool
+}
+
+func (m *fakeAddressManager) Ensure(cfg Config, ip net.IP) (bool, error) {
+	m.ensured = append(m.ensured, cfg.Prefix+"|"+ip.String())
+	return m.owned, m.err
+}
+
+func (m *fakeAddressManager) Remove(cfg Config, ip net.IP) error {
+	m.removed = append(m.removed, cfg.Prefix+"|"+ip.String())
+	return m.err
+}
+
+func TestControllerPreservesCollisionStateAcrossIncrementalAssignments(t *testing.T) {
+	manager := &fakeAddressManager{owned: true}
+	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8::/124"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := controller.Assign("auth-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := controller.Assign("auth-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Equal(second) {
+		t.Fatalf("incremental assignments collided at %s", first)
+	}
+}
+
+func TestControllerReleaseRemovesOnlyManagedAssignment(t *testing.T) {
+	manager := &fakeAddressManager{owned: true}
+	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8::/120"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip, err := controller.Assign("managed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = controller.Release("unknown"); err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.removed) != 0 {
+		t.Fatalf("unknown release removed addresses: %#v", manager.removed)
+	}
+	if err = controller.Release("managed"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2001:db8::/120|" + ip.String()}
+	if !reflect.DeepEqual(manager.removed, want) {
+		t.Fatalf("removed = %#v, want %#v", manager.removed, want)
+	}
+}
+
+func TestControllerRetainsReservationForHealthyAddressOwnedOutsideProcess(t *testing.T) {
+	manager := &fakeAddressManager{owned: false}
+	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8::/120"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = controller.Assign("preexisting"); err != nil {
+		t.Fatal(err)
+	}
+	if err = controller.Release("preexisting"); err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.removed) != 0 {
+		t.Fatalf("release removed address not attached by this process: %#v", manager.removed)
+	}
+	if reserved, ok := controller.allocator.Lookup("preexisting"); !ok || reserved == nil {
+		t.Fatal("release discarded allocator reservation for retained external address")
+	}
+}
+
+func TestControllerExternalReleaseDoesNotReuseAddressForCollidingAuth(t *testing.T) {
+	manager := &fakeAddressManager{owned: false}
+	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8::/124"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := controller.Assign("auth-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = controller.Release("auth-1"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := controller.Assign("auth-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Equal(second) {
+		t.Fatalf("retained external address %s was reused by a colliding auth", first)
+	}
+}
+
+func TestControllerReconfigureReleasesOldPrefixAndDisablesCleanly(t *testing.T) {
+	manager := &fakeAddressManager{owned: true}
+	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8:1::/120"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldIP, err := controller.Assign("auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = controller.Configure(Config{Enabled: true, Prefix: "2001:db8:2::/120"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := manager.removed, []string{"2001:db8:1::/120|" + oldIP.String()}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("prefix change removed = %#v, want %#v", got, want)
+	}
+	newIP, err := controller.Assign("auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldIP.Equal(newIP) || !strings.HasPrefix(newIP.String(), "2001:db8:2:") {
+		t.Fatalf("new assignment = %s, want new prefix after %s", newIP, oldIP)
+	}
+	if err = controller.Configure(Config{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.removed) != 2 {
+		t.Fatalf("disable removed %d addresses, want 2 total", len(manager.removed))
+	}
+	if ip, errDisabled := controller.Assign("disabled"); errDisabled != nil || ip != nil {
+		t.Fatalf("disabled Assign() = %v, %v; want nil, nil", ip, errDisabled)
+	}
+}
+
+func TestControllerKeepsStateWhenEquivalentConfigIsReapplied(t *testing.T) {
+	manager := &fakeAddressManager{owned: true}
+	controller, err := newController(Config{Enabled: true, Mode: ModeAuto, Prefix: "2001:db8::/120", Interface: "eth0"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := controller.Assign("auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = controller.Configure(Config{Enabled: true, Prefix: "2001:db8::/120", Interface: "eth0"}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := controller.Assign("auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Equal(second) || len(manager.removed) != 0 {
+		t.Fatalf("equivalent config changed assignment %s -> %s or removed %#v", first, second, manager.removed)
+	}
+}
+
+func TestControllerDoesNotForgetAssignmentWhenRemovalFails(t *testing.T) {
+	manager := &fakeAddressManager{owned: true}
+	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8::/120"}, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned, err := controller.Assign("auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.err = errors.New("permission denied")
+	if err = controller.Release("auth"); err == nil {
+		t.Fatal("Release() error = nil, want removal failure")
+	}
+	manager.err = nil
+	lookup, ok := controller.Lookup("auth")
+	if !ok || !lookup.Equal(assigned) {
+		t.Fatalf("failed release lost managed assignment: %s, %v", lookup, ok)
 	}
 }
 

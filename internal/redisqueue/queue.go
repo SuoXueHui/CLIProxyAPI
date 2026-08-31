@@ -165,11 +165,14 @@ func (q *queue) closeSubscribers() {
 	}
 }
 
-func (q *queue) enqueue(payload []byte) {
+func (q *queue) enqueue(payload []byte) bool {
 	now := time.Now()
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if !Enabled() {
+		return false
+	}
 
 	q.pruneLocked(now)
 	q.items = append(q.items, queueItem{
@@ -177,6 +180,7 @@ func (q *queue) enqueue(payload []byte) {
 		payload:    append([]byte(nil), payload...),
 	})
 	q.maybeCompactLocked()
+	return true
 }
 
 func (q *queue) publishToSubscribers(payload []byte) bool {

@@ -8,6 +8,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 func adaptiveSchedulerTestConfig() internalconfig.AdaptiveAuthConfig {
@@ -93,6 +94,75 @@ func TestAdaptiveSchedulerFiltersPluginCandidates(t *testing.T) {
 	filtered := scheduler.filterAdaptiveCandidates("gemini", "", candidates, "")
 	if len(filtered) != 1 || filtered[0].ID != "healthy" {
 		t.Fatalf("filterAdaptiveCandidates() = %#v, want healthy only", filtered)
+	}
+}
+
+func TestAdaptivePluginSchedulerFiltersAfterHardAvailability(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(schedulerTestExecutor{provider: "gemini"})
+	manager.SetConfig(&internalconfig.Config{Routing: internalconfig.RoutingConfig{AdaptiveAuth: adaptiveSchedulerTestConfig()}})
+	for _, candidate := range []*Auth{
+		{ID: "penalized-ready", Provider: "gemini"},
+		{ID: "healthy-blocked", Provider: "gemini", Unavailable: true},
+	} {
+		if _, errRegister := manager.Register(context.Background(), candidate); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", candidate.ID, errRegister)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		manager.scheduler.reportAdaptiveObservation("gemini", "", "penalized-ready", 20*time.Second, 30*time.Second, true)
+	}
+
+	pluginScheduler := &fakePluginScheduler{
+		resp:    pluginapi.SchedulerPickResponse{Handled: true, AuthID: "penalized-ready"},
+		handled: true,
+	}
+	manager.SetPluginScheduler(pluginScheduler)
+
+	selected, _, errPick := manager.pickNext(context.Background(), "gemini", "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() error = %v", errPick)
+	}
+	if selected == nil || selected.ID != "penalized-ready" {
+		t.Fatalf("pickNext() auth = %#v, want penalized-ready", selected)
+	}
+	if len(pluginScheduler.requests) != 1 || len(pluginScheduler.requests[0].Candidates) != 1 || pluginScheduler.requests[0].Candidates[0].ID != "penalized-ready" {
+		t.Fatalf("plugin scheduler candidates = %#v, want only penalized-ready", pluginScheduler.requests)
+	}
+}
+
+func TestAdaptiveMixedPluginSchedulerFiltersAfterHardAvailability(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(schedulerTestExecutor{provider: "gemini"})
+	manager.RegisterExecutor(schedulerTestExecutor{provider: "claude"})
+	manager.SetConfig(&internalconfig.Config{Routing: internalconfig.RoutingConfig{AdaptiveAuth: adaptiveSchedulerTestConfig()}})
+	for _, candidate := range []*Auth{
+		{ID: "gemini-penalized-ready", Provider: "gemini"},
+		{ID: "claude-healthy-blocked", Provider: "claude", Unavailable: true},
+	} {
+		if _, errRegister := manager.Register(context.Background(), candidate); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", candidate.ID, errRegister)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		manager.scheduler.reportAdaptiveObservation("gemini", "", "gemini-penalized-ready", 20*time.Second, 30*time.Second, true)
+	}
+
+	pluginScheduler := &fakePluginScheduler{
+		resp:    pluginapi.SchedulerPickResponse{Handled: true, AuthID: "gemini-penalized-ready"},
+		handled: true,
+	}
+	manager.SetPluginScheduler(pluginScheduler)
+
+	selected, _, provider, errPick := manager.pickNextMixed(context.Background(), []string{"gemini", "claude"}, "", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNextMixed() error = %v", errPick)
+	}
+	if selected == nil || selected.ID != "gemini-penalized-ready" || provider != "gemini" {
+		t.Fatalf("pickNextMixed() = auth %#v provider %q, want gemini-penalized-ready/gemini", selected, provider)
+	}
+	if len(pluginScheduler.requests) != 1 || len(pluginScheduler.requests[0].Candidates) != 1 || pluginScheduler.requests[0].Candidates[0].ID != "gemini-penalized-ready" {
+		t.Fatalf("mixed plugin scheduler candidates = %#v, want only gemini-penalized-ready", pluginScheduler.requests)
 	}
 }
 

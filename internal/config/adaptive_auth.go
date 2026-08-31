@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -23,7 +24,7 @@ const (
 // It deliberately has no hard concurrency limit, so enabling it cannot reduce
 // the total request concurrency accepted by the proxy.
 type AdaptiveAuthConfig struct {
-	Enabled             bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Enabled             bool          `yaml:"enabled" json:"enabled"`
 	ObserveOnly         bool          `yaml:"observe-only,omitempty" json:"observe-only,omitempty"`
 	FirstEventThreshold time.Duration `yaml:"first-event-threshold,omitempty" json:"first-event-threshold,omitempty"`
 	SlowStreak          int           `yaml:"slow-streak,omitempty" json:"slow-streak,omitempty"`
@@ -34,35 +35,51 @@ type AdaptiveAuthConfig struct {
 	LoadFloor           time.Duration `yaml:"load-floor,omitempty" json:"load-floor,omitempty"`
 	StateTTL            time.Duration `yaml:"state-ttl,omitempty" json:"state-ttl,omitempty"`
 	MaxStateEntries     int           `yaml:"max-state-entries,omitempty" json:"max-state-entries,omitempty"`
-
-	enabledPresent bool
 }
 
-// UnmarshalYAML records whether enabled was explicitly supplied so an omitted
-// block can use the active default while operators can still opt out explicitly.
+// DefaultAdaptiveAuthConfig returns the active compatibility defaults used when
+// adaptive-auth is omitted from file-based configuration.
+func DefaultAdaptiveAuthConfig() AdaptiveAuthConfig {
+	return AdaptiveAuthConfig{
+		Enabled:             true,
+		FirstEventThreshold: defaultAdaptiveFirstEventThreshold,
+		SlowStreak:          defaultAdaptiveSlowStreak,
+		Penalty:             defaultAdaptivePenalty,
+		MaxPenalty:          defaultAdaptiveMaxPenalty,
+		EWMAAlpha:           defaultAdaptiveEWMAAlpha,
+		MinSamples:          defaultAdaptiveMinSamples,
+		LoadFloor:           defaultAdaptiveLoadFloor,
+		StateTTL:            defaultAdaptiveStateTTL,
+		MaxStateEntries:     defaultAdaptiveMaxStateEntries,
+	}
+}
+
+// UnmarshalYAML starts from the file compatibility defaults so an omitted
+// enabled field remains active while an explicit false value can opt out.
 func (c *AdaptiveAuthConfig) UnmarshalYAML(value *yaml.Node) error {
 	type rawAdaptiveAuthConfig AdaptiveAuthConfig
-	var raw rawAdaptiveAuthConfig
+	raw := rawAdaptiveAuthConfig(DefaultAdaptiveAuthConfig())
 	if errDecode := value.Decode(&raw); errDecode != nil {
 		return errDecode
 	}
 	*c = AdaptiveAuthConfig(raw)
-	if value != nil && value.Kind == yaml.MappingNode {
-		for index := 0; index+1 < len(value.Content); index += 2 {
-			if value.Content[index].Value == "enabled" {
-				c.enabledPresent = true
-				break
-			}
-		}
+	return nil
+}
+
+// UnmarshalJSON preserves the same omitted-field compatibility as YAML while
+// allowing an explicit false value to disable adaptive scheduling.
+func (c *AdaptiveAuthConfig) UnmarshalJSON(data []byte) error {
+	type rawAdaptiveAuthConfig AdaptiveAuthConfig
+	raw := rawAdaptiveAuthConfig(DefaultAdaptiveAuthConfig())
+	if errDecode := json.Unmarshal(data, &raw); errDecode != nil {
+		return errDecode
 	}
+	*c = AdaptiveAuthConfig(raw)
 	return nil
 }
 
 // WithDefaults applies conservative defaults while preserving explicit values.
 func (c AdaptiveAuthConfig) WithDefaults() AdaptiveAuthConfig {
-	if !c.enabledPresent {
-		c.Enabled = true
-	}
 	if c.FirstEventThreshold == 0 {
 		c.FirstEventThreshold = defaultAdaptiveFirstEventThreshold
 	}

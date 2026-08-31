@@ -143,24 +143,52 @@ type codexWeeklyOverdraftGateEvidence struct {
 
 var codexWeeklyOverdraftGates sync.Map
 
+func codexWeeklyOverdraftGateEvidenceActive(evidence codexWeeklyOverdraftGateEvidence, window string, now time.Time) bool {
+	ttl := 6 * time.Hour
+	if window == "7d" {
+		ttl = 7 * 24 * time.Hour
+	}
+	active := now.Sub(evidence.openedAt) < ttl
+	if !evidence.resetAt.IsZero() {
+		active = now.Before(evidence.resetAt)
+	}
+	return active
+}
+
+// pruneCodexWeeklyOverdraftGates bounds process-local evidence even when an
+// expired account is never selected again. The gate map is small and updates
+// are infrequent, so pruning on verified evidence writes avoids a background job.
+func pruneCodexWeeklyOverdraftGates(now time.Time) {
+	codexWeeklyOverdraftGates.Range(func(key, value any) bool {
+		keyString, okKey := key.(string)
+		evidence, okEvidence := value.(codexWeeklyOverdraftGateEvidence)
+		if !okKey || !okEvidence {
+			codexWeeklyOverdraftGates.Delete(key)
+			return true
+		}
+		separator := strings.LastIndexByte(keyString, '\x00')
+		window := "unknown"
+		if separator >= 0 && separator+1 < len(keyString) {
+			window = normalizeCodexOverdraftWindow(keyString[separator+1:])
+		}
+		if window == "unknown" || !codexWeeklyOverdraftGateEvidenceActive(evidence, window, now) {
+			codexWeeklyOverdraftGates.CompareAndDelete(key, value)
+		}
+		return true
+	})
+}
+
 func codexWeeklyOverdraftGateOpen(cfg config.CodexWeeklyOverdraftConfig, authID string, metadata map[string]any) (bool, string, string) {
 	if strings.TrimSpace(cfg.GateMode) == "" || cfg.GateMode == config.CodexWeeklyOverdraftGateModeOff {
 		return true, codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_window"), codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_cycle_key")
 	}
 	authID = strings.TrimSpace(authID)
 	window := normalizeCodexOverdraftWindow(codexWeeklyOverdraftMetadata(metadata, "codex_overdraft_window"))
+	now := time.Now()
 	if window != "unknown" {
 		if value, ok := codexWeeklyOverdraftGates.Load(authID + "\x00" + window); ok {
 			evidence := value.(codexWeeklyOverdraftGateEvidence)
-			ttl := 6 * time.Hour
-			if window == "7d" {
-				ttl = 7 * 24 * time.Hour
-			}
-			active := time.Since(evidence.openedAt) < ttl
-			if !evidence.resetAt.IsZero() {
-				active = time.Now().Before(evidence.resetAt)
-			}
-			if active {
+			if codexWeeklyOverdraftGateEvidenceActive(evidence, window, now) {
 				return true, window, evidence.cycleKey
 			}
 			codexWeeklyOverdraftGates.Delete(authID + "\x00" + window)
@@ -173,15 +201,7 @@ func codexWeeklyOverdraftGateOpen(cfg config.CodexWeeklyOverdraftConfig, authID 
 			continue
 		}
 		evidence := value.(codexWeeklyOverdraftGateEvidence)
-		ttl := 6 * time.Hour
-		if candidate == "7d" {
-			ttl = 7 * 24 * time.Hour
-		}
-		active := time.Since(evidence.openedAt) < ttl
-		if !evidence.resetAt.IsZero() {
-			active = time.Now().Before(evidence.resetAt)
-		}
-		if active {
+		if codexWeeklyOverdraftGateEvidenceActive(evidence, candidate, now) {
 			return true, candidate, evidence.cycleKey
 		}
 		codexWeeklyOverdraftGates.Delete(authID + "\x00" + candidate)
@@ -209,6 +229,7 @@ func RecordCodexWeeklyOverdraftQuotaEvidenceWithThresholdAndCycle(authID, window
 	if strings.TrimSpace(authID) == "" || status != 429 || !codexWeeklyOverdraftQuotaSignal(headers, body, threshold) {
 		return
 	}
+	pruneCodexWeeklyOverdraftGates(time.Now())
 	normalizedWindow := normalizeCodexOverdraftWindow(window)
 	if normalizedWindow == "unknown" {
 		return

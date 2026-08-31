@@ -92,6 +92,12 @@ type Service struct {
 	// cooldownStateStore persists runtime cooldown state when enabled.
 	cooldownStateStore coreauth.CooldownStateStore
 
+	// egressState owns process-local IPv6 assignments across config synthesis
+	// and incremental auth updates. The mutex keeps configuration changes and
+	// assignments ordered as one operation.
+	egressMu    sync.Mutex
+	egressState *egressRuntimeState
+
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 

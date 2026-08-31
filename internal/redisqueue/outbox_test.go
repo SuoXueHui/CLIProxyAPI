@@ -1,10 +1,240 @@
 package redisqueue
 
 import (
+	"context"
+	"database/sql"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestCompactOutboxRequiresDisabledQueue(t *testing.T) {
+	previous := snapshotGlobalOutboxForTest()
+	previousEnabled := Enabled()
+	t.Cleanup(func() {
+		SetEnabled(false)
+		restoreGlobalOutboxForTest(previous)
+		SetEnabled(previousEnabled)
+	})
+
+	path := filepath.Join(t.TempDir(), "usage-outbox.sqlite")
+	if errConfigure := ConfigureOutbox(path); errConfigure != nil {
+		t.Fatalf("ConfigureOutbox() error = %v", errConfigure)
+	}
+	SetEnabled(true)
+
+	_, errCompact := CompactOutbox(context.Background())
+	if errCompact == nil || !strings.Contains(errCompact.Error(), "disabled") {
+		t.Fatalf("CompactOutbox() error = %v, want disabled queue requirement", errCompact)
+	}
+}
+
+func TestCompactOutboxReclaimsAckedPagesAndPreservesPendingData(t *testing.T) {
+	previous := snapshotGlobalOutboxForTest()
+	previousEnabled := Enabled()
+	t.Cleanup(func() {
+		SetEnabled(false)
+		restoreGlobalOutboxForTest(previous)
+		SetEnabled(previousEnabled)
+	})
+
+	path := filepath.Join(t.TempDir(), "usage-outbox.sqlite")
+	SetEnabled(false)
+	if errConfigure := ConfigureOutbox(path); errConfigure != nil {
+		t.Fatalf("ConfigureOutbox() error = %v", errConfigure)
+	}
+	SetEnabled(true)
+	for index := 0; index < 40; index++ {
+		payload := []byte(`{"id":` + strings.Repeat("x", 64*1024) + `}`)
+		if errEnqueue := EnqueueWithError(payload); errEnqueue != nil {
+			t.Fatalf("EnqueueWithError(%d) error = %v", index, errEnqueue)
+		}
+	}
+	claim, errClaim := Claim(40, time.Minute)
+	if errClaim != nil {
+		t.Fatalf("Claim() error = %v", errClaim)
+	}
+	if len(claim.Items) != 40 {
+		t.Fatalf("Claim() items = %d, want 40", len(claim.Items))
+	}
+	ackedIDs := make([]string, 0, len(claim.Items)-1)
+	for _, item := range claim.Items[:len(claim.Items)-1] {
+		ackedIDs = append(ackedIDs, item.DeliveryID)
+	}
+	if acked, errAck := Ack(claim.LeaseID, ackedIDs); errAck != nil || acked != 39 {
+		t.Fatalf("Ack() = %d, err=%v, want 39", acked, errAck)
+	}
+	SetEnabled(false)
+
+	before := Status()
+	if before.StorageBytes == 0 || before.ReclaimableBytes == 0 {
+		t.Fatalf("Status() before compaction = %+v, want allocated and reclaimable bytes", before)
+	}
+	result, errCompact := CompactOutbox(context.Background())
+	if errCompact != nil {
+		t.Fatalf("CompactOutbox() error = %v", errCompact)
+	}
+	if result.BeforeBytes != before.StorageBytes || result.AfterBytes >= result.BeforeBytes || result.ReclaimedBytes != result.BeforeBytes-result.AfterBytes {
+		t.Fatalf("CompactOutbox() = %+v, want a smaller consistent storage size", result)
+	}
+	if mainBytes := existingFileSize(t, path); mainBytes != result.AfterBytes {
+		t.Fatalf("database file size after compaction = %d, want %d", mainBytes, result.AfterBytes)
+	}
+	if walBytes := existingFileSize(t, path+"-wal"); walBytes != 0 {
+		t.Fatalf("WAL file size after compaction = %d, want 0", walBytes)
+	}
+	after := Status()
+	if after.StorageBytes != result.AfterBytes || after.ReclaimableBytes >= before.ReclaimableBytes {
+		t.Fatalf("Status() after compaction = %+v, result=%+v, want reclaimed storage", after, result)
+	}
+	if after.Pending != 0 || after.Inflight != 1 || after.Produced != 40 || after.Acked != 39 {
+		t.Fatalf("Status() after compaction = %+v, want pending data and counters preserved", after)
+	}
+
+	SetEnabled(true)
+	remaining, errRemaining := Claim(1, time.Minute)
+	if errRemaining != nil || len(remaining.Items) != 0 {
+		t.Fatalf("Claim() before lease expiry = %+v, err=%v, want preserved inflight record", remaining, errRemaining)
+	}
+}
+
+func TestCompactOutboxReportsBusyWALCheckpoint(t *testing.T) {
+	previous := snapshotGlobalOutboxForTest()
+	previousEnabled := Enabled()
+	t.Cleanup(func() {
+		SetEnabled(false)
+		restoreGlobalOutboxForTest(previous)
+		SetEnabled(previousEnabled)
+	})
+
+	path := filepath.Join(t.TempDir(), "usage-outbox.sqlite")
+	SetEnabled(false)
+	if errConfigure := ConfigureOutbox(path); errConfigure != nil {
+		t.Fatalf("ConfigureOutbox() error = %v", errConfigure)
+	}
+	SetEnabled(true)
+	if errEnqueue := EnqueueWithError([]byte(strings.Repeat("x", 256*1024))); errEnqueue != nil {
+		t.Fatalf("EnqueueWithError() error = %v", errEnqueue)
+	}
+
+	readerDB, errOpen := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if errOpen != nil {
+		t.Fatalf("open reader: %v", errOpen)
+	}
+	defer readerDB.Close()
+	readerTx, errBegin := readerDB.Begin()
+	if errBegin != nil {
+		t.Fatalf("begin reader: %v", errBegin)
+	}
+	defer readerTx.Rollback()
+	var count int
+	if errRead := readerTx.QueryRow(`SELECT COUNT(*) FROM usage_outbox`).Scan(&count); errRead != nil || count != 1 {
+		t.Fatalf("reader count = %d, err=%v, want 1", count, errRead)
+	}
+
+	SetEnabled(false)
+	_, errCompact := CompactOutbox(context.Background())
+	if errCompact == nil || !strings.Contains(errCompact.Error(), "checkpoint") {
+		t.Fatalf("CompactOutbox() error = %v, want busy checkpoint failure", errCompact)
+	}
+}
+
+func existingFileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, errStat := os.Stat(path)
+	if os.IsNotExist(errStat) {
+		return 0
+	}
+	if errStat != nil {
+		t.Fatalf("stat %q: %v", path, errStat)
+	}
+	return info.Size()
+}
+
+func TestEnqueueDoesNotWriteAfterQueueIsDisabledWhileWaitingForRuntimeLock(t *testing.T) {
+	previous := snapshotGlobalOutboxForTest()
+	previousEnabled := Enabled()
+	previousMaxProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() {
+		SetEnabled(false)
+		restoreGlobalOutboxForTest(previous)
+		SetEnabled(previousEnabled)
+		runtime.GOMAXPROCS(previousMaxProcs)
+	})
+
+	SetEnabled(false)
+	if errConfigure := ConfigureOutbox(filepath.Join(t.TempDir(), "usage-outbox.sqlite")); errConfigure != nil {
+		t.Fatalf("ConfigureOutbox() error = %v", errConfigure)
+	}
+	SetEnabled(true)
+	runtimeOutbox.mu.Lock()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- EnqueueWithError([]byte(`{"id":1}`))
+	}()
+	<-started
+	runtime.Gosched()
+	// This is the intermediate state of SetEnabled(false) before it waits on the runtime lock.
+	enabled.Store(false)
+	runtimeOutbox.mu.Unlock()
+	if errEnqueue := <-done; errEnqueue != nil {
+		t.Fatalf("EnqueueWithError() error = %v", errEnqueue)
+	}
+	if status := Status(); status.Pending != 0 || status.Produced != 0 {
+		t.Fatalf("Status() = %+v, want no write after disable", status)
+	}
+}
+
+func TestMemoryEnqueueDoesNotWriteAfterQueueIsDisabledWhileWaitingForQueueLock(t *testing.T) {
+	previous := snapshotGlobalOutboxForTest()
+	previousEnabled := Enabled()
+	previousMaxProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() {
+		SetEnabled(false)
+		restoreGlobalOutboxForTest(previous)
+		SetEnabled(previousEnabled)
+		runtime.GOMAXPROCS(previousMaxProcs)
+	})
+
+	SetEnabled(false)
+	if errConfigure := ConfigureOutbox(disabledOutboxPath); errConfigure != nil {
+		t.Fatalf("ConfigureOutbox() error = %v", errConfigure)
+	}
+	SetEnabled(true)
+	subscriber, unsubscribe := SubscribeUsage()
+	defer unsubscribe()
+	requireUsageSubscriberPayload(t, subscriber, usageSupportRefreshPayload)
+	global.mu.Lock()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- EnqueueWithError([]byte(`{"id":1}`))
+	}()
+	<-started
+	runtime.Gosched()
+	// Acquiring this lock confirms that the producer has already left the runtime section.
+	runtimeOutbox.mu.Lock()
+	runtimeOutbox.mu.Unlock()
+	enabled.Store(false)
+	global.mu.Unlock()
+	if errEnqueue := <-done; errEnqueue != nil {
+		t.Fatalf("EnqueueWithError() error = %v", errEnqueue)
+	}
+	if status := Status(); status.Pending != 0 || status.Produced != 0 {
+		t.Fatalf("Status() = %+v, want no memory write after disable", status)
+	}
+	select {
+	case payload := <-subscriber:
+		t.Fatalf("subscriber payload after disable = %s, want none", payload)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
 
 func TestOutboxReopenPreservesPendingRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage-outbox.sqlite")

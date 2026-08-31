@@ -37,6 +37,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
+	cfg.Routing.AdaptiveAuth = DefaultAdaptiveAuthConfig()
 	cfg.Codex.AccountDeviceIdentity = DefaultCodexAccountDeviceIdentityMode()
 	cfg.Codex.WeeklyOverdraft = DefaultCodexWeeklyOverdraftConfig()
 
