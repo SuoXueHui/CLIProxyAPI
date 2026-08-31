@@ -2,7 +2,6 @@ package redisqueue
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,7 +10,7 @@ import (
 	"time"
 )
 
-func TestCompactOutboxRequiresDisabledQueue(t *testing.T) {
+func TestStartupOutboxMaintenanceRequiresDisabledQueue(t *testing.T) {
 	previous := snapshotGlobalOutboxForTest()
 	previousEnabled := Enabled()
 	t.Cleanup(func() {
@@ -26,13 +25,13 @@ func TestCompactOutboxRequiresDisabledQueue(t *testing.T) {
 	}
 	SetEnabled(true)
 
-	_, errCompact := CompactOutbox(context.Background())
-	if errCompact == nil || !strings.Contains(errCompact.Error(), "disabled") {
-		t.Fatalf("CompactOutbox() error = %v, want disabled queue requirement", errCompact)
+	_, errMaintain := maintainOutboxAtStartup(context.Background(), 1, 0)
+	if errMaintain == nil || !strings.Contains(errMaintain.Error(), "disabled") {
+		t.Fatalf("maintainOutboxAtStartup() error = %v, want disabled queue requirement", errMaintain)
 	}
 }
 
-func TestCompactOutboxReclaimsAckedPagesAndPreservesPendingData(t *testing.T) {
+func TestStartupOutboxMaintenanceReclaimsAckedPagesAndPreservesPendingData(t *testing.T) {
 	previous := snapshotGlobalOutboxForTest()
 	previousEnabled := Enabled()
 	t.Cleanup(func() {
@@ -73,15 +72,16 @@ func TestCompactOutboxReclaimsAckedPagesAndPreservesPendingData(t *testing.T) {
 	if before.StorageBytes == 0 || before.ReclaimableBytes == 0 {
 		t.Fatalf("Status() before compaction = %+v, want allocated and reclaimable bytes", before)
 	}
-	result, errCompact := CompactOutbox(context.Background())
-	if errCompact != nil {
-		t.Fatalf("CompactOutbox() error = %v", errCompact)
+	result, errMaintain := maintainOutboxAtStartup(context.Background(), 1, 0)
+	if errMaintain != nil {
+		t.Fatalf("maintainOutboxAtStartup() error = %v", errMaintain)
 	}
-	if result.BeforeBytes != before.StorageBytes || result.AfterBytes >= result.BeforeBytes || result.ReclaimedBytes != result.BeforeBytes-result.AfterBytes {
-		t.Fatalf("CompactOutbox() = %+v, want a smaller consistent storage size", result)
+	if !result.Performed || result.BeforeBytes != before.StorageBytes || result.AfterBytes >= result.BeforeBytes || result.ReclaimedBytes != result.BeforeBytes-result.AfterBytes {
+		t.Fatalf("maintainOutboxAtStartup() = %+v, want a smaller consistent storage size", result)
 	}
-	if mainBytes := existingFileSize(t, path); mainBytes != result.AfterBytes {
-		t.Fatalf("database file size after compaction = %d, want %d", mainBytes, result.AfterBytes)
+	physicalBytes := existingFileSize(t, path) + existingFileSize(t, path+"-wal") + existingFileSize(t, path+"-shm")
+	if physicalBytes != result.AfterBytes {
+		t.Fatalf("physical database size after compaction = %d, want %d", physicalBytes, result.AfterBytes)
 	}
 	if walBytes := existingFileSize(t, path+"-wal"); walBytes != 0 {
 		t.Fatalf("WAL file size after compaction = %d, want 0", walBytes)
@@ -101,7 +101,7 @@ func TestCompactOutboxReclaimsAckedPagesAndPreservesPendingData(t *testing.T) {
 	}
 }
 
-func TestCompactOutboxReportsBusyWALCheckpoint(t *testing.T) {
+func TestStartupOutboxMaintenanceSkipsBelowThreshold(t *testing.T) {
 	previous := snapshotGlobalOutboxForTest()
 	previousEnabled := Enabled()
 	t.Cleanup(func() {
@@ -110,35 +110,35 @@ func TestCompactOutboxReportsBusyWALCheckpoint(t *testing.T) {
 		SetEnabled(previousEnabled)
 	})
 
-	path := filepath.Join(t.TempDir(), "usage-outbox.sqlite")
 	SetEnabled(false)
-	if errConfigure := ConfigureOutbox(path); errConfigure != nil {
-		t.Fatalf("ConfigureOutbox() error = %v", errConfigure)
+	if errConfigure := ConfigureOutbox(filepath.Join(t.TempDir(), "usage-outbox.sqlite")); errConfigure != nil {
+		t.Fatal(errConfigure)
 	}
-	SetEnabled(true)
-	if errEnqueue := EnqueueWithError([]byte(strings.Repeat("x", 256*1024))); errEnqueue != nil {
-		t.Fatalf("EnqueueWithError() error = %v", errEnqueue)
+	result, errMaintain := maintainOutboxAtStartup(context.Background(), 1<<30, 0.5)
+	if errMaintain != nil {
+		t.Fatal(errMaintain)
 	}
+	if result.Performed {
+		t.Fatalf("maintenance performed below threshold: %+v", result)
+	}
+}
 
-	readerDB, errOpen := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
-	if errOpen != nil {
-		t.Fatalf("open reader: %v", errOpen)
+func TestOutboxPhysicalStorageBytesIncludesWALAndSHM(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage-outbox.sqlite")
+	for name, size := range map[string]int{
+		path: 11, path + "-wal": 13, path + "-shm": 17,
+	} {
+		if errWrite := os.WriteFile(name, make([]byte, size), 0o600); errWrite != nil {
+			t.Fatal(errWrite)
+		}
 	}
-	defer readerDB.Close()
-	readerTx, errBegin := readerDB.Begin()
-	if errBegin != nil {
-		t.Fatalf("begin reader: %v", errBegin)
+	bytes, errBytes := outboxPhysicalStorageBytes(path)
+	if errBytes != nil {
+		t.Fatal(errBytes)
 	}
-	defer readerTx.Rollback()
-	var count int
-	if errRead := readerTx.QueryRow(`SELECT COUNT(*) FROM usage_outbox`).Scan(&count); errRead != nil || count != 1 {
-		t.Fatalf("reader count = %d, err=%v, want 1", count, errRead)
-	}
-
-	SetEnabled(false)
-	_, errCompact := CompactOutbox(context.Background())
-	if errCompact == nil || !strings.Contains(errCompact.Error(), "checkpoint") {
-		t.Fatalf("CompactOutbox() error = %v, want busy checkpoint failure", errCompact)
+	if bytes != 41 {
+		t.Fatalf("physical storage bytes = %d, want 41", bytes)
 	}
 }
 

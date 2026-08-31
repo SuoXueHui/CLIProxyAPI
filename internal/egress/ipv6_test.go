@@ -27,8 +27,12 @@ func TestEnsureAddressKeepsHealthyExistingAddress(t *testing.T) {
 	originalPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
 	t.Setenv("IP_ARGS_FILE", argsPath)
-	if err := EnsureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42")); err != nil {
-		t.Fatalf("EnsureAddress() error = %v", err)
+	adopted, errEnsure := ensureAddress(Config{Enabled: true, Prefix: "2001:db8::/64", Interface: "eth0"}, net.ParseIP("2001:db8::42"))
+	if errEnsure != nil {
+		t.Fatalf("ensureAddress() error = %v", errEnsure)
+	}
+	if !adopted {
+		t.Fatal("ensureAddress() did not adopt healthy existing address")
 	}
 	args, err := os.ReadFile(argsPath)
 	if err != nil {
@@ -164,8 +168,8 @@ func TestControllerReleaseRemovesOnlyManagedAssignment(t *testing.T) {
 	}
 }
 
-func TestControllerRetainsReservationForHealthyAddressOwnedOutsideProcess(t *testing.T) {
-	manager := &fakeAddressManager{owned: false}
+func TestControllerAdoptsHealthyExistingAddressForLifecycleCleanup(t *testing.T) {
+	manager := &fakeAddressManager{owned: true}
 	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8::/120"}, manager)
 	if err != nil {
 		t.Fatal(err)
@@ -176,89 +180,11 @@ func TestControllerRetainsReservationForHealthyAddressOwnedOutsideProcess(t *tes
 	if err = controller.Release("preexisting"); err != nil {
 		t.Fatal(err)
 	}
-	if len(manager.removed) != 0 {
-		t.Fatalf("release removed address not attached by this process: %#v", manager.removed)
+	if len(manager.removed) != 1 {
+		t.Fatalf("release removed %d adopted addresses, want 1", len(manager.removed))
 	}
-	if reserved, ok := controller.allocator.Lookup("preexisting"); !ok || reserved == nil {
-		t.Fatal("release discarded allocator reservation for retained external address")
-	}
-}
-
-func TestControllerExternalReleaseDoesNotReuseAddressForCollidingAuth(t *testing.T) {
-	manager := &fakeAddressManager{owned: false}
-	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8::/124"}, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := controller.Assign("auth-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = controller.Release("auth-1"); err != nil {
-		t.Fatal(err)
-	}
-	second, err := controller.Assign("auth-2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Equal(second) {
-		t.Fatalf("retained external address %s was reused by a colliding auth", first)
-	}
-}
-
-func TestControllerReconfigureReleasesOldPrefixAndDisablesCleanly(t *testing.T) {
-	manager := &fakeAddressManager{owned: true}
-	controller, err := newController(Config{Enabled: true, Prefix: "2001:db8:1::/120"}, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldIP, err := controller.Assign("auth")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = controller.Configure(Config{Enabled: true, Prefix: "2001:db8:2::/120"}); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := manager.removed, []string{"2001:db8:1::/120|" + oldIP.String()}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("prefix change removed = %#v, want %#v", got, want)
-	}
-	newIP, err := controller.Assign("auth")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if oldIP.Equal(newIP) || !strings.HasPrefix(newIP.String(), "2001:db8:2:") {
-		t.Fatalf("new assignment = %s, want new prefix after %s", newIP, oldIP)
-	}
-	if err = controller.Configure(Config{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(manager.removed) != 2 {
-		t.Fatalf("disable removed %d addresses, want 2 total", len(manager.removed))
-	}
-	if ip, errDisabled := controller.Assign("disabled"); errDisabled != nil || ip != nil {
-		t.Fatalf("disabled Assign() = %v, %v; want nil, nil", ip, errDisabled)
-	}
-}
-
-func TestControllerKeepsStateWhenEquivalentConfigIsReapplied(t *testing.T) {
-	manager := &fakeAddressManager{owned: true}
-	controller, err := newController(Config{Enabled: true, Mode: ModeAuto, Prefix: "2001:db8::/120", Interface: "eth0"}, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := controller.Assign("auth")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = controller.Configure(Config{Enabled: true, Prefix: "2001:db8::/120", Interface: "eth0"}); err != nil {
-		t.Fatal(err)
-	}
-	second, err := controller.Assign("auth")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !first.Equal(second) || len(manager.removed) != 0 {
-		t.Fatalf("equivalent config changed assignment %s -> %s or removed %#v", first, second, manager.removed)
+	if reserved, ok := controller.allocator.Lookup("preexisting"); ok || reserved != nil {
+		t.Fatalf("release retained adopted allocator reservation: %s, %v", reserved, ok)
 	}
 }
 

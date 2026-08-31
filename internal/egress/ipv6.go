@@ -4,6 +4,7 @@ package egress
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -170,7 +171,10 @@ func ensureAddress(cfg Config, ip net.IP) (bool, error) {
 		return false, errState
 	}
 	if state.exists && !state.unusable() {
-		return false, nil
+		// A healthy address in this network namespace can be adopted by the
+		// current process so later auth deletion or config disable can remove it.
+		// This does not provide ownership exclusion across container namespaces.
+		return true, nil
 	}
 	// Docker bridge interfaces can retain tentative or dadfailed state after a
 	// failed handoff. replace is idempotent for both absent and existing
@@ -327,40 +331,6 @@ func newController(cfg Config, addresses addressManager) (*Controller, error) {
 	}, nil
 }
 
-// Configure keeps the current allocator for an equivalent configuration and
-// otherwise releases every address owned by it before installing fresh state.
-// The replacement configuration is validated before any address is touched.
-func (c *Controller) Configure(cfg Config) error {
-	if c == nil {
-		return nil
-	}
-	allocator, err := NewAllocator(cfg)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if configEqual(c.cfg, cfg) {
-		return nil
-	}
-	ids := sortedAssignmentIDs(c.managed)
-	for _, authID := range ids {
-		if errRemove := c.addresses.Remove(c.cfg, c.managed[authID]); errRemove != nil {
-			return fmt.Errorf("release IPv6 egress for auth %q during reconfiguration: %w", authID, errRemove)
-		}
-	}
-	// Keep the old ownership map intact until every removal succeeds. A partial
-	// network failure can then be retried without forgetting an address that may
-	// still be present in the namespace.
-	for _, authID := range ids {
-		delete(c.managed, authID)
-		c.allocator.Release(authID)
-	}
-	c.cfg = cloneConfig(cfg)
-	c.allocator = allocator
-	return nil
-}
-
 // Assign resolves and attaches the stable address for authID.
 func (c *Controller) Assign(authID string) (net.IP, error) {
 	if c == nil {
@@ -401,10 +371,8 @@ func (c *Controller) Release(authID string) error {
 		delete(c.managed, authID)
 		c.allocator.Release(authID)
 	}
-	// A healthy address discovered after process restart is not safe to remove,
-	// but its allocator reservation must remain while it is still present in the
-	// namespace. Otherwise a later collision could assign that address to a
-	// different auth even though the original kernel address was retained.
+	// Unknown assignments are left untouched because the controller has no
+	// evidence that their kernel address belongs to this lifecycle.
 	return nil
 }
 
@@ -417,6 +385,66 @@ func (c *Controller) Lookup(authID string) (net.IP, bool) {
 	defer c.mu.Unlock()
 	ip, ok := c.managed[strings.TrimSpace(authID)]
 	return cloneIP(ip), ok
+}
+
+// Equivalent reports whether cfg describes the controller's active allocation domain.
+func (c *Controller) Equivalent(cfg Config) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return configEqual(c.cfg, cfg)
+}
+
+// ManagedAssignments returns addresses owned or adopted by this controller.
+func (c *Controller) ManagedAssignments() map[string]net.IP {
+	result := make(map[string]net.IP)
+	if c == nil {
+		return result
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for authID, ip := range c.managed {
+		result[authID] = cloneIP(ip)
+	}
+	return result
+}
+
+// Close removes managed addresses except those retained by a replacement controller.
+// Retention is matched by address because a config transition can preserve an address
+// while changing its auth mapping representation.
+func (c *Controller) CloseExcept(retained map[string]net.IP) error {
+	if c == nil {
+		return nil
+	}
+	retainedIPs := make(map[string]struct{}, len(retained))
+	for _, ip := range retained {
+		if ip != nil {
+			retainedIPs[ip.String()] = struct{}{}
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ids := sortedAssignmentIDs(c.managed)
+	errs := make([]error, 0)
+	for _, authID := range ids {
+		ip := c.managed[authID]
+		if _, keep := retainedIPs[ip.String()]; !keep {
+			if errRemove := c.addresses.Remove(c.cfg, ip); errRemove != nil {
+				errs = append(errs, fmt.Errorf("remove IPv6 egress for auth %q: %w", authID, errRemove))
+				continue
+			}
+		}
+		delete(c.managed, authID)
+		c.allocator.Release(authID)
+	}
+	return errors.Join(errs...)
+}
+
+// Close removes every address owned or adopted by this controller.
+func (c *Controller) Close() error {
+	return c.CloseExcept(nil)
 }
 
 func cloneConfig(cfg Config) Config {

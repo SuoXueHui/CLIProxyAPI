@@ -16,7 +16,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const disabledOutboxPath = "disabled"
+const (
+	disabledOutboxPath                        = "disabled"
+	defaultOutboxMaintenanceMinReclaimable    = int64(64 << 20)
+	defaultOutboxMaintenanceMinReclaimablePct = 0.5
+)
 
 var errOutboxUnavailable = errors.New("usage outbox unavailable")
 
@@ -49,14 +53,16 @@ type QueueStatus struct {
 
 // OutboxMaintenanceResult reports database pages reclaimed by an explicit maintenance run.
 type OutboxMaintenanceResult struct {
+	Performed      bool  `json:"performed"`
 	BeforeBytes    int64 `json:"before_bytes"`
 	AfterBytes     int64 `json:"after_bytes"`
 	ReclaimedBytes int64 `json:"reclaimed_bytes"`
 }
 
 type durableOutbox struct {
-	db  *sql.DB
-	now func() time.Time
+	db   *sql.DB
+	path string
+	now  func() time.Time
 }
 
 type outboxRuntime struct {
@@ -150,7 +156,7 @@ INSERT OR IGNORE INTO usage_outbox_meta(key, value) VALUES ('produced', 0), ('ac
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize usage outbox: %w", errSchema)
 	}
-	return &durableOutbox{db: db, now: now}, nil
+	return &durableOutbox{db: db, path: path, now: now}, nil
 }
 
 func (o *durableOutbox) close() error {
@@ -160,7 +166,7 @@ func (o *durableOutbox) close() error {
 	return o.db.Close()
 }
 
-func (o *durableOutbox) storageBytes(ctx context.Context) (int64, error) {
+func (o *durableOutbox) allocatedBytes(ctx context.Context) (int64, error) {
 	if o == nil || o.db == nil {
 		return 0, errOutboxUnavailable
 	}
@@ -173,6 +179,28 @@ func (o *durableOutbox) storageBytes(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("read usage outbox page size: %w", errPageSize)
 	}
 	return pageCount * pageSize, nil
+}
+
+func outboxPhysicalStorageBytes(path string) (int64, error) {
+	var total int64
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, errStat := os.Stat(candidate)
+		if os.IsNotExist(errStat) {
+			continue
+		}
+		if errStat != nil {
+			return 0, fmt.Errorf("inspect usage outbox storage %q: %w", candidate, errStat)
+		}
+		total += info.Size()
+	}
+	return total, nil
+}
+
+func (o *durableOutbox) storageBytes() (int64, error) {
+	if o == nil || o.db == nil {
+		return 0, errOutboxUnavailable
+	}
+	return outboxPhysicalStorageBytes(o.path)
 }
 
 func (o *durableOutbox) reclaimableBytes(ctx context.Context) (int64, error) {
@@ -195,7 +223,7 @@ func (o *durableOutbox) compact(ctx context.Context) (OutboxMaintenanceResult, e
 	if o == nil || o.db == nil {
 		return result, errOutboxUnavailable
 	}
-	beforeBytes, errBefore := o.storageBytes(ctx)
+	beforeBytes, errBefore := o.storageBytes()
 	if errBefore != nil {
 		return result, errBefore
 	}
@@ -211,12 +239,13 @@ func (o *durableOutbox) compact(ctx context.Context) (OutboxMaintenanceResult, e
 	if checkpointBusy != 0 {
 		return result, fmt.Errorf("checkpoint compacted usage outbox: database is busy (log=%d checkpointed=%d)", checkpointLog, checkpointCheckpointed)
 	}
-	afterBytes, errAfter := o.storageBytes(ctx)
+	afterBytes, errAfter := o.storageBytes()
 	if errAfter != nil {
 		return result, errAfter
 	}
 	result.AfterBytes = afterBytes
 	result.ReclaimedBytes = max(0, beforeBytes-afterBytes)
+	result.Performed = true
 	return result, nil
 }
 
@@ -427,7 +456,7 @@ FROM usage_outbox`, now.UnixNano(), now.UnixNano(), now.UnixNano()).Scan(&status
 	if errRows := rows.Err(); errRows != nil {
 		return status, errRows
 	}
-	storageBytes, errStorage := o.storageBytes(context.Background())
+	storageBytes, errStorage := o.storageBytes()
 	if errStorage != nil {
 		return status, errStorage
 	}
@@ -507,21 +536,46 @@ func CloseOutbox() error {
 	return durable.close()
 }
 
-// CompactOutbox reclaims unused SQLite pages during an explicit disabled-queue maintenance window.
-func CompactOutbox(ctx context.Context) (OutboxMaintenanceResult, error) {
+// MaintainOutboxAtStartup reclaims a materially bloated durable outbox before
+// request handling enables the usage publisher. It is intentionally unavailable
+// at runtime so maintenance cannot create a window where usage events disappear.
+func MaintainOutboxAtStartup(ctx context.Context) (OutboxMaintenanceResult, error) {
+	return maintainOutboxAtStartup(ctx, defaultOutboxMaintenanceMinReclaimable, defaultOutboxMaintenanceMinReclaimablePct)
+}
+
+func maintainOutboxAtStartup(ctx context.Context, minReclaimableBytes int64, minReclaimableRatio float64) (OutboxMaintenanceResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	runtimeOutbox.mu.Lock()
 	defer runtimeOutbox.mu.Unlock()
 	if Enabled() {
-		return OutboxMaintenanceResult{}, errors.New("usage outbox compaction requires the queue to be disabled")
+		return OutboxMaintenanceResult{}, errors.New("usage outbox startup maintenance requires the queue to be disabled")
 	}
 	if runtimeOutbox.mode != "durable" {
-		return OutboxMaintenanceResult{}, errors.New("usage outbox compaction requires durable mode")
+		return OutboxMaintenanceResult{}, nil
 	}
 	if runtimeOutbox.durable == nil {
 		return OutboxMaintenanceResult{}, errOutboxUnavailable
+	}
+	physicalBytes, errPhysical := runtimeOutbox.durable.storageBytes()
+	if errPhysical != nil {
+		return OutboxMaintenanceResult{}, errPhysical
+	}
+	reclaimableBytes, errReclaimable := runtimeOutbox.durable.reclaimableBytes(ctx)
+	if errReclaimable != nil {
+		return OutboxMaintenanceResult{}, errReclaimable
+	}
+	allocatedBytes, errAllocated := runtimeOutbox.durable.allocatedBytes(ctx)
+	if errAllocated != nil {
+		return OutboxMaintenanceResult{}, errAllocated
+	}
+	result := OutboxMaintenanceResult{BeforeBytes: physicalBytes, AfterBytes: physicalBytes}
+	if reclaimableBytes < max(0, minReclaimableBytes) {
+		return result, nil
+	}
+	if minReclaimableRatio > 0 && (allocatedBytes <= 0 || float64(reclaimableBytes)/float64(allocatedBytes) < minReclaimableRatio) {
+		return result, nil
 	}
 	return runtimeOutbox.durable.compact(ctx)
 }

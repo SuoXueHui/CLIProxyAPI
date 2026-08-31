@@ -21,6 +21,7 @@ func (s *Service) applyWatcherConfigUpdate(newCfg *config.Config) {
 
 type configCommit struct {
 	cfg      *config.Config
+	previous *config.Config
 	sequence uint64
 }
 
@@ -109,10 +110,26 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	}
 
 	s.cfgMu.Lock()
+	previous := s.cfg
 	s.cfg = newCfg
 	s.cfgMu.Unlock()
 	s.configSequence++
-	return configCommit{cfg: newCfg, sequence: s.configSequence}
+	return configCommit{cfg: newCfg, previous: previous, sequence: s.configSequence}
+}
+
+func (s *Service) rollbackConfigCommit(commit configCommit) {
+	if s == nil || commit.sequence == 0 {
+		return
+	}
+	s.configUpdateMu.Lock()
+	defer s.configUpdateMu.Unlock()
+	if s.configSequence != commit.sequence {
+		return
+	}
+	s.cfgMu.Lock()
+	s.cfg = commit.previous
+	s.cfgMu.Unlock()
+	s.configSequence++
 }
 
 func (s *Service) configCommitCurrent(commit configCommit) bool {
@@ -144,12 +161,9 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	// Reconcile account-owned IPv6 addresses before applying the rest of the
 	// runtime config. This also handles disable/prefix changes when no auth
 	// update is emitted by the watcher.
-	if errEgress := s.configureEgress(cfg.IPv6Egress); errEgress != nil {
-		log.Errorf("failed to reconcile IPv6 egress configuration: %v", errEgress)
-		return false
-	}
-	if errEgress := s.reconcileRuntimeAuthEgress(ctx, cfg.IPv6Egress); errEgress != nil {
+	if errEgress := s.transitionEgress(ctx, cfg.IPv6Egress); errEgress != nil {
 		log.Errorf("failed to update runtime auth IPv6 egress: %v", errEgress)
+		s.rollbackConfigCommit(commit)
 		return false
 	}
 
@@ -276,7 +290,7 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 			continue
 		}
 		if cfg.IPv6Egress.Enabled {
-			ip, errResolve := s.assignEgressIPv6(cfg.IPv6Egress, auth.ID)
+			ip, errResolve := s.assignEgressIPv6(auth.ID)
 			if errResolve != nil {
 				log.Errorf("failed to resolve IPv6 egress for auth %q: %v", auth.ID, errResolve)
 				continue

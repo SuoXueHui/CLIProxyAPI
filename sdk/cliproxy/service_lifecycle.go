@@ -53,6 +53,14 @@ func (s *Service) Run(ctx context.Context) error {
 	outboxPath := redisqueue.ResolveOutboxPath(s.configPath, s.cfg.UsageOutboxPath)
 	if errOutbox := redisqueue.ConfigureOutbox(outboxPath); errOutbox != nil {
 		log.WithError(errOutbox).Error("durable usage outbox is unavailable; usage events will be dropped until storage recovers")
+	} else if maintenance, errMaintenance := redisqueue.MaintainOutboxAtStartup(ctx); errMaintenance != nil {
+		log.WithError(errMaintenance).Warn("usage outbox startup maintenance skipped")
+	} else if maintenance.Performed {
+		log.WithFields(log.Fields{
+			"before_bytes":    maintenance.BeforeBytes,
+			"after_bytes":     maintenance.AfterBytes,
+			"reclaimed_bytes": maintenance.ReclaimedBytes,
+		}).Info("usage outbox startup maintenance completed")
 	}
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
@@ -81,6 +89,9 @@ func (s *Service) Run(ctx context.Context) error {
 	if s.coreManager != nil && !homeEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
+		}
+		if errEgress := s.initializeLoadedAuthEgress(ctx); errEgress != nil {
+			return fmt.Errorf("cliproxy: initialize IPv6 egress: %w", errEgress)
 		}
 		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
 		if s.cfg.SaveCooldownStatus {

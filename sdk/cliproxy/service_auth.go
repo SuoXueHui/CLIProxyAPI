@@ -112,21 +112,13 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			if update.Auth == nil || update.Auth.ID == "" {
 				continue
 			}
-			// EgressIPv6 is runtime-owned state. Never trust a persisted or
-			// externally supplied value when the current config disables it.
-			update.Auth = update.Auth.Clone()
-			update.Auth.EgressIPv6 = ""
-			if cfg.IPv6Egress.Enabled {
-				ip, errResolve := s.assignEgressIPv6(cfg.IPv6Egress, update.Auth.ID)
-				if errResolve != nil {
-					log.Errorf("failed to resolve IPv6 egress for auth %q: %v", update.Auth.ID, errResolve)
-					continue
-				}
-				if ip != nil {
-					update.Auth.EgressIPv6 = ip.String()
-				}
+			// EgressIPv6 is runtime-owned state. Selection and registration stay
+			// atomic with respect to config transitions.
+			auth, errResolve := s.prepareAuthUpdateWithEgress(registrationCtx, update.Auth)
+			if errResolve != nil {
+				log.Errorf("failed to resolve IPv6 egress for auth %q: %v", update.Auth.ID, errResolve)
+				continue
 			}
-			auth := s.prepareCoreAuthForModelRegistration(registrationCtx, update.Auth)
 			if auth == nil {
 				continue
 			}
@@ -148,8 +140,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			if id == "" {
 				continue
 			}
-			s.applyCoreAuthRemoval(registrationCtx, id)
-			if errRelease := s.releaseEgressIPv6(cfg.IPv6Egress, id); errRelease != nil {
+			if errRelease := s.removeAuthWithEgress(registrationCtx, id); errRelease != nil {
 				log.Errorf("failed to release IPv6 egress for auth %q: %v", id, errRelease)
 			}
 			needsAliasRebuild = true
