@@ -266,6 +266,10 @@ func (s *Service) reloadConfigFromWatcher() bool {
 }
 
 func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) {
+	s.registerConfigAPIKeyAuthsWithEgress(ctx, cfg, true)
+}
+
+func (s *Service) registerConfigAPIKeyAuthsWithEgress(ctx context.Context, cfg *config.Config, includeEgress bool) {
 	if s == nil || s.coreManager == nil || cfg == nil {
 		return
 	}
@@ -289,7 +293,7 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		if !coreauth.IsConfigAPIKeyAuth(auth) {
 			continue
 		}
-		if cfg.IPv6Egress.Enabled {
+		if includeEgress && cfg.IPv6Egress.Enabled {
 			ip, errResolve := s.assignEgressIPv6(auth.ID)
 			if errResolve != nil {
 				log.Errorf("failed to resolve IPv6 egress for auth %q: %v", auth.ID, errResolve)

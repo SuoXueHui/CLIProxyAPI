@@ -7,9 +7,11 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
 	internalregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
@@ -68,7 +70,13 @@ func TestBuilderStandbyLoadsCredentialsBeforeServingReadOnly(t *testing.T) {
 	}
 	t.Setenv("CLIPROXY_LIFECYCLE_MODE", string(lifecycle.ModeStandby))
 	t.Setenv("CLIPROXY_WRITER_LOCK_PATH", filepath.Join(t.TempDir(), "writer.lock"))
-	service, errBuild := NewBuilder().WithConfig(&config.Config{AuthDir: authDir}).WithConfigPath(filepath.Join(authDir, "config.yaml")).Build()
+	service, errBuild := NewBuilder().WithConfig(&config.Config{
+		AuthDir:    authDir,
+		IPv6Egress: egress.Config{Enabled: true, Prefix: "2001:db8::/120", Interface: "eth0"},
+		CodexKey: []config.CodexKey{{
+			APIKey: "configured-key",
+		}},
+	}).WithConfigPath(filepath.Join(authDir, "config.yaml")).Build()
 	if errBuild != nil {
 		t.Fatalf("Build() error = %v", errBuild)
 	}
@@ -79,17 +87,28 @@ func TestBuilderStandbyLoadsCredentialsBeforeServingReadOnly(t *testing.T) {
 	if errTransition != nil {
 		t.Fatalf("standby -> serving-readonly error = %v", errTransition)
 	}
-	if status.Mode != lifecycle.ModeServingReadOnly || !status.AcceptingNew || status.CredentialWriter {
+	if status.Mode != lifecycle.ModeServingReadOnly || !status.AcceptingNew || status.CredentialWriter || status.IPv6Enabled {
 		t.Fatalf("serving-readonly status = %+v", status)
 	}
-	if got := len(service.coreManager.List()); got != 1 {
-		t.Fatalf("serving-readonly auth count = %d, want 1", got)
+	auths := service.coreManager.List()
+	if got := len(auths); got != 2 {
+		t.Fatalf("serving-readonly auth count = %d, want file and config auth", got)
 	}
-	authID := service.coreManager.List()[0].ID
 	modelRegistry := internalregistry.GetGlobalRegistry()
-	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
-	if models := modelRegistry.GetModelsForClient(authID); len(models) == 0 {
-		t.Fatal("serving-readonly did not register models for loaded auth")
+	configAuthFound := false
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		authID := auth.ID
+		t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+		if models := modelRegistry.GetModelsForClient(authID); len(models) == 0 {
+			t.Fatalf("serving-readonly did not register models for auth %q", authID)
+		}
+		configAuthFound = configAuthFound || coreauth.IsConfigAPIKeyAuth(auth)
+	}
+	if !configAuthFound {
+		t.Fatal("serving-readonly did not restore config API-key auth")
 	}
 	if _, ok := service.coreManager.Executor("codex"); !ok {
 		t.Fatal("serving-readonly did not register the loaded auth executor")

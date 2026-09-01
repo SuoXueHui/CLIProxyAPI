@@ -97,7 +97,11 @@ func (s *Service) Run(ctx context.Context) error {
 				return fmt.Errorf("cliproxy: initialize IPv6 egress: %w", errEgress)
 			}
 		}
-		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
+		if s.lifecycleActive() {
+			s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
+		} else {
+			s.registerConfigAPIKeyAuthsWithEgress(coreauth.WithSkipPersist(ctx), s.cfg, false)
+		}
 		if s.cfg.SaveCooldownStatus {
 			if errRestoreCooldown := s.coreManager.RestoreCooldownStates(ctx); errRestoreCooldown != nil {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)

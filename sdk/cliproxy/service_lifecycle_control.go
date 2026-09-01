@@ -8,6 +8,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
@@ -52,19 +53,7 @@ func (s *Service) prepareLifecycleReadOnly(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	s.setLifecycleWritesEnabled(false)
-	if s.coreManager == nil {
-		return nil
-	}
-	if errLoad := s.coreManager.Load(ctx); errLoad != nil {
-		return fmt.Errorf("load auth store for read-only serving: %w", errLoad)
-	}
-	auths := s.coreManager.List()
-	s.registerAvailableExecutors(ctx, executorRegistrationOptions{auths: auths})
-	s.registerModelsForAuthBatch(ctx, auths)
-	if errContext := ctx.Err(); errContext != nil {
-		return fmt.Errorf("prepare read-only serving: %w", errContext)
-	}
-	return nil
+	return s.reloadLifecycleAuthState(ctx)
 }
 
 func (s *Service) lifecycleActive() bool {
@@ -96,6 +85,10 @@ func (s *Service) activateLifecycle(ctx context.Context) (lifecycle.Components, 
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	return s.activateLifecycleLocked(ctx)
+}
+
+func (s *Service) activateLifecycleLocked(ctx context.Context) (lifecycle.Components, error) {
 	if s.writerLease == nil {
 		lease, errLease := lifecycle.AcquireWriterLease(s.writerLeasePath)
 		if errLease != nil {
@@ -103,7 +96,9 @@ func (s *Service) activateLifecycle(ctx context.Context) (lifecycle.Components, 
 		}
 		s.writerLease = lease
 	}
-	s.setLifecycleWritesEnabled(true)
+	// Keep write gates closed until the latest auth snapshot and all runtime
+	// components are ready. Read-only requests are drained before this hook runs.
+	s.setLifecycleWritesEnabled(false)
 	rollback := true
 	defer func() {
 		if !rollback {
@@ -118,10 +113,8 @@ func (s *Service) activateLifecycle(ctx context.Context) (lifecycle.Components, 
 	if !s.syncPluginRuntimeConfig(ctx) {
 		return lifecycle.Components{}, fmt.Errorf("activate plugin runtime during promotion")
 	}
-	if s.coreManager != nil {
-		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
-			return lifecycle.Components{}, fmt.Errorf("reload auth store during promotion: %w", errLoad)
-		}
+	if errLoad := s.reloadLifecycleAuthState(ctx); errLoad != nil {
+		return lifecycle.Components{}, fmt.Errorf("reload auth store during promotion: %w", errLoad)
 	}
 	if errEgress := s.initializeLoadedAuthEgress(ctx); errEgress != nil {
 		return lifecycle.Components{}, fmt.Errorf("activate IPv6 egress during promotion: %w", errEgress)
@@ -129,6 +122,7 @@ func (s *Service) activateLifecycle(ctx context.Context) (lifecycle.Components, 
 	if errWatcher := s.startFileWatcher(context.Background()); errWatcher != nil {
 		return lifecycle.Components{}, errWatcher
 	}
+	s.setLifecycleWritesEnabled(true)
 	if s.coreManager != nil {
 		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
 	}
@@ -140,6 +134,30 @@ func (s *Service) activateLifecycle(ctx context.Context) (lifecycle.Components, 
 	return lifecycle.Components{WriterLeaseHeld: true, AutoRefresh: s.coreManager != nil, IPv6Enabled: ipv6Enabled, PluginRuntime: pluginRuntime}, nil
 }
 
+func (s *Service) reloadLifecycleAuthState(ctx context.Context) error {
+	if s == nil || s.coreManager == nil {
+		return nil
+	}
+	if errLoad := s.coreManager.Load(ctx); errLoad != nil {
+		return fmt.Errorf("load auth store: %w", errLoad)
+	}
+	s.cfgMu.RLock()
+	cfg := s.cfg
+	s.cfgMu.RUnlock()
+	if cfg != nil {
+		// Read-only preparation must not allocate account IPv6 addresses. Active
+		// promotion initializes egress after the previous owner has stopped.
+		s.registerConfigAPIKeyAuthsWithEgress(coreauth.WithSkipPersist(ctx), cfg, false)
+	}
+	auths := s.coreManager.List()
+	s.registerAvailableExecutors(ctx, executorRegistrationOptions{auths: auths})
+	s.registerModelsForAuthBatch(ctx, auths)
+	if errContext := ctx.Err(); errContext != nil {
+		return fmt.Errorf("register lifecycle auth runtime: %w", errContext)
+	}
+	return nil
+}
+
 func (s *Service) beginLifecycleDrain() {
 	if s == nil {
 		return
@@ -149,21 +167,13 @@ func (s *Service) beginLifecycleDrain() {
 	s.stopLifecycleBackground()
 }
 
-func (s *Service) resumeLifecycleActive(ctx context.Context) error {
+func (s *Service) resumeLifecycleActive(ctx context.Context) (lifecycle.Components, error) {
 	if s == nil {
-		return nil
+		return lifecycle.Components{}, nil
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	if errWatcher := s.startFileWatcher(ctx); errWatcher != nil {
-		return errWatcher
-	}
-	if s.coreManager != nil {
-		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
-	}
-	// The controller commits the AutoRefresh component after this hook returns.
-	// Updating it here would re-enter the controller lock held by Transition.
-	return nil
+	return s.activateLifecycleLocked(ctx)
 }
 
 func (s *Service) setLifecycleComponents(autoRefresh bool) {
@@ -188,12 +198,14 @@ func (s *Service) deactivateLifecycle(ctx context.Context) error {
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
+	// Close every credential write gate before tearing down any dependency that
+	// an in-flight refresh or persistence operation could still reference.
+	s.setLifecycleWritesEnabled(false)
 	s.stopLifecycleBackground()
 	if errEgress := s.transitionEgress(ctx, egress.Config{}); errEgress != nil {
 		return fmt.Errorf("release IPv6 egress during demotion: %w", errEgress)
 	}
 	s.stopLifecyclePlugins(ctx)
-	s.setLifecycleWritesEnabled(false)
 	return s.releaseWriterLease()
 }
 

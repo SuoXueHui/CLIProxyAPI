@@ -222,7 +222,9 @@ func (s *Server) putLifecycleStatus(c *gin.Context) {
 	status, errTransition := s.lifecycleController.Transition(c.Request.Context(), request.Target, request.ExpectedGeneration)
 	if errTransition != nil {
 		statusCode := http.StatusConflict
-		if !errors.Is(errTransition, lifecycle.ErrGenerationConflict) && !errors.Is(errTransition, lifecycle.ErrInvalidTransition) {
+		if !errors.Is(errTransition, lifecycle.ErrGenerationConflict) &&
+			!errors.Is(errTransition, lifecycle.ErrInvalidTransition) &&
+			!errors.Is(errTransition, lifecycle.ErrActiveRequests) {
 			statusCode = http.StatusServiceUnavailable
 		}
 		c.JSON(statusCode, gin.H{"error": errTransition.Error(), "status": status})

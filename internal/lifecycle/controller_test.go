@@ -23,9 +23,12 @@ func TestControllerAdmissionAndTransitions(t *testing.T) {
 			record("activate")
 			return Components{WriterLeaseHeld: true}, nil
 		},
-		BeginDrain:   func() { record("drain") },
-		ResumeActive: func(context.Context) error { record("resume"); return nil },
-		Deactivate:   func(context.Context) error { record("deactivate"); return nil },
+		BeginDrain: func() { record("drain") },
+		ResumeActive: func(context.Context) (Components, error) {
+			record("resume")
+			return Components{WriterLeaseHeld: true}, nil
+		},
+		Deactivate: func(context.Context) error { record("deactivate"); return nil },
 	})
 
 	if _, admitted := controller.AdmitProxy(); admitted {
@@ -114,9 +117,12 @@ func TestControllerPreparesReadOnlyBeforeAdmissionWithoutHoldingStateLock(t *tes
 	}
 }
 
-func TestControllerDrainingWaitsForAdmittedRequests(t *testing.T) {
+func TestControllerDrainingReturnsRetryableStateAndAllowsRollback(t *testing.T) {
 	controller := NewController(ModeActive)
-	controller.SetHooks(Hooks{Deactivate: func(context.Context) error { return nil }})
+	controller.SetHooks(Hooks{
+		ResumeActive: func(context.Context) (Components, error) { return Components{WriterLeaseHeld: true}, nil },
+		Deactivate:   func(context.Context) error { return nil },
+	})
 	done, admitted := controller.AdmitProxy()
 	if !admitted {
 		t.Fatal("active rejected proxy traffic")
@@ -126,32 +132,88 @@ func TestControllerDrainingWaitsForAdmittedRequests(t *testing.T) {
 		t.Fatalf("active -> draining error = %v", errDrain)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, errStandby := controller.Transition(ctx, ModeStandby, status.Generation); !errors.Is(errStandby, context.DeadlineExceeded) {
-		t.Fatalf("draining -> standby error = %v, want deadline", errStandby)
+	if _, errStandby := controller.Transition(context.Background(), ModeStandby, status.Generation); !errors.Is(errStandby, ErrActiveRequests) {
+		t.Fatalf("draining -> standby error = %v, want active requests", errStandby)
+	}
+	if status, errResume := controller.Transition(context.Background(), ModeActive, 0); errResume != nil || status.Mode != ModeActive {
+		t.Fatalf("draining -> active rollback = %+v, %v", status, errResume)
 	}
 	done()
+	status, errDrain = controller.Transition(context.Background(), ModeDraining, 0)
+	if errDrain != nil {
+		t.Fatalf("active -> draining after rollback error = %v", errDrain)
+	}
 	if _, errStandby := controller.Transition(context.Background(), ModeStandby, 0); errStandby != nil {
 		t.Fatalf("draining -> standby after completion error = %v", errStandby)
 	}
 }
 
-func TestControllerServingReadOnlyWaitsBeforeStandby(t *testing.T) {
+func TestControllerServingReadOnlyClosesAdmissionBeforeStandby(t *testing.T) {
 	controller := NewController(ModeServingReadOnly)
 	done, admitted := controller.AdmitProxy()
 	if !admitted {
 		t.Fatal("serving-readonly rejected proxy traffic")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, errStandby := controller.Transition(ctx, ModeStandby, 0); !errors.Is(errStandby, context.DeadlineExceeded) {
-		t.Fatalf("serving-readonly -> standby error = %v, want deadline", errStandby)
+	status, errStandby := controller.Transition(context.Background(), ModeStandby, 0)
+	if !errors.Is(errStandby, ErrActiveRequests) {
+		t.Fatalf("serving-readonly -> standby error = %v, want active requests", errStandby)
+	}
+	if status.AcceptingNew {
+		t.Fatal("serving-readonly kept admission open while requests drained")
+	}
+	if _, admitted := controller.AdmitProxy(); admitted {
+		t.Fatal("serving-readonly admitted a request while standby was pending")
 	}
 	done()
 	if _, errStandby := controller.Transition(context.Background(), ModeStandby, 0); errStandby != nil {
 		t.Fatalf("serving-readonly -> standby after completion error = %v", errStandby)
 	}
+}
+
+func TestControllerServingReadOnlyDrainsBeforeActivation(t *testing.T) {
+	controller := NewController(ModeServingReadOnly)
+	activated := 0
+	controller.SetHooks(Hooks{Activate: func(context.Context) (Components, error) {
+		activated++
+		return Components{WriterLeaseHeld: true}, nil
+	}})
+	done, admitted := controller.AdmitProxy()
+	if !admitted {
+		t.Fatal("serving-readonly rejected initial request")
+	}
+	status, errActivate := controller.Transition(context.Background(), ModeActive, 0)
+	if !errors.Is(errActivate, ErrActiveRequests) || status.AcceptingNew || activated != 0 {
+		t.Fatalf("first activation = %+v, %v, hook calls=%d", status, errActivate, activated)
+	}
+	done()
+	status, errActivate = controller.Transition(context.Background(), ModeActive, 0)
+	if errActivate != nil || status.Mode != ModeActive || !status.AcceptingNew || activated != 1 {
+		t.Fatalf("activation after drain = %+v, %v, hook calls=%d", status, errActivate, activated)
+	}
+}
+
+func TestControllerTransitionLockHonorsContext(t *testing.T) {
+	controller := NewController(ModeStandby)
+	prepareStarted := make(chan struct{})
+	allowPrepare := make(chan struct{})
+	controller.SetHooks(Hooks{PrepareReadOnly: func(context.Context) error {
+		close(prepareStarted)
+		<-allowPrepare
+		return nil
+	}})
+	firstDone := make(chan struct{})
+	go func() {
+		_, _ = controller.Transition(context.Background(), ModeServingReadOnly, 0)
+		close(firstDone)
+	}()
+	<-prepareStarted
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, errTransition := controller.Transition(ctx, ModeServingReadOnly, 0); !errors.Is(errTransition, context.DeadlineExceeded) {
+		t.Fatalf("queued transition error = %v, want deadline", errTransition)
+	}
+	close(allowPrepare)
+	<-firstDone
 }
 
 func TestControllerRejectsStaleGenerationAndActivationFailure(t *testing.T) {
@@ -166,6 +228,9 @@ func TestControllerRejectsStaleGenerationAndActivationFailure(t *testing.T) {
 	}
 	if got := controller.Status().Mode; got != ModeServingReadOnly {
 		t.Fatalf("mode after activation failure = %s", got)
+	}
+	if !controller.Status().AcceptingNew {
+		t.Fatal("activation failure did not restore read-only admission")
 	}
 }
 
