@@ -90,3 +90,10 @@
 - Manager `24ae4799` 增加 2 秒级局部轮询：仅账号页可见且存在分身账号时启用，只更新 replica summary map，不触发完整 credential/history/quota workspace 刷新；页面隐藏或没有分身账号时停止。
 - 生产 Core 的 `/auth-files` 在当前 49 个物理账号、132 个分身规模下实测单次 15-34ms；线上连续四次页面采样中并发数字自动变化，22 行均参与刷新，控制台无错误。
 - OAuth 重新登录经 `saveTokenRecord -> MergeExistingAuthMetadata`，会保留现有非 token metadata，因此 `codex_replica` 不会消失。手工上传文件或粘贴 JSON 同名覆盖经 `writeAuthFile -> os.WriteFile` 原样替换；若新 JSON 省略 `codex_replica`，分身配置会消失，若显式携带则以新值为准。
+
+## 2026-09-02 逐分身并发明细
+
+- Core 的物理账号聚合行新增 `replica_concurrency_details`，每项只暴露运行时分身序号、当前 admission 占用、单分身上限和 IPv6 是否已分配，不暴露运行时 auth ID 或完整 IPv6。
+- `replica_count`、`replica_concurrency`、`replica_active`、`replica_total_capacity` 等旧字段保持不变，Manager 在 Core 滚动切换期间可回退到旧聚合显示。
+- Manager 身份区不再显示 `分身 N × C` 标签；可用状态区最多显示前 6 个分身的紧凑明细，超过 6 个时显示剩余数量，完整值保留在悬浮提示中。
+- 局部轮询的相等判断必须包含逐分身数组，不能只比较聚合 active；否则请求在不同分身间迁移但总量不变时，React 状态会错误复用旧快照。

@@ -42,3 +42,6 @@
 - 2026-09-01：定位列表 `active/total` 仅随完整 auth-files reload 更新；实现可见页且存在分身账号时的 2 秒局部运行态轮询，测试验证数字从 2/60 自动更新为 4/60且完整 workspace 只加载一次。
 - 2026-09-01：实时显示通过 217 个测试文件/2699 条测试、type-check、lint 0 error、Manager Server 全量测试和 single-file 构建；Manager `24ae4799` 已发布为 `v1.12.6-replica-live-24ae4799-amd64`。
 - 2026-09-01：线上 22 行连续采样确认并发值自动变化，Core/Manager/Router healthy；同时确认 OAuth 重登录保留分身配置，手工上传/粘贴同名 JSON 若省略 `codex_replica` 则会覆盖掉配置。
+- 2026-09-02：按新界面要求隐藏账号身份区的 `分身 N × C` 标签；Core 管理投影增加按运行时分身返回的 `index/active/limit/egress_assigned` 明细，原聚合字段继续保留。
+- 2026-09-02：Manager 将逐分身并发显示为两列紧凑网格，默认 6 个分身为三行；2 秒局部轮询可识别“聚合 active 不变、分身间负载迁移”的变化，旧 Core 无明细时继续显示聚合并发。
+- 2026-09-02：Core 受影响包、服务端构建及排除未跟踪历史 planning artifacts 的干净快照全仓测试通过；Manager 217 个测试文件/2699 条测试、type-check、生产构建、lint（0 error、1 条既有 warning）和 Manager Server 全量测试通过。

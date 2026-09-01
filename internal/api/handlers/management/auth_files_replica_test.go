@@ -88,4 +88,17 @@ func TestListAuthFilesAggregatesCodexReplicaRuntimeState(t *testing.T) {
 	if entry["replica_enabled"] != true || entry["auth_index"] != "shared-auth-index" || entry["name"] != "codex.json" {
 		t.Fatalf("replica identity summary = %#v", entry)
 	}
+	details, okDetails := entry["replica_concurrency_details"].([]any)
+	if !okDetails || len(details) != 2 {
+		t.Fatalf("replica concurrency details = %#v, want two entries", entry["replica_concurrency_details"])
+	}
+	for index, wantActive := range []float64{1, 0} {
+		detail, okDetail := details[index].(map[string]any)
+		if !okDetail {
+			t.Fatalf("replica concurrency detail %d = %#v", index+1, details[index])
+		}
+		if detail["index"] != float64(index+1) || detail["active"] != wantActive || detail["limit"] != float64(10) || detail["egress_assigned"] != true {
+			t.Fatalf("replica concurrency detail %d = %#v", index+1, detail)
+		}
+	}
 }

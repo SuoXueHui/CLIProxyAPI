@@ -151,6 +151,7 @@ func (h *Handler) buildCodexReplicaGroupEntry(replicas []*coreauth.Auth) gin.H {
 	var failed int64
 	active := 0
 	egressAssigned := 0
+	concurrencyDetails := make([]gin.H, 0, len(replicas))
 	recent := make([]coreauth.RecentRequestBucket, 0)
 	for index, replica := range replicas {
 		if replica == nil {
@@ -158,9 +159,20 @@ func (h *Handler) buildCodexReplicaGroupEntry(replicas []*coreauth.Auth) gin.H {
 		}
 		success += replica.Success
 		failed += replica.Failed
-		active += coreauth.CodexReplicaConcurrencySnapshot(replica.ID).Active
-		if strings.TrimSpace(replica.EgressIPv6) != "" {
+		snapshot := coreauth.CodexReplicaConcurrencySnapshot(replica.ID)
+		active += snapshot.Active
+		egressIsAssigned := strings.TrimSpace(replica.EgressIPv6) != ""
+		if egressIsAssigned {
 			egressAssigned++
+		}
+		_, replicaIndex, _, replicaConcurrency, replicaOK := coreauth.CodexReplicaRuntimeInfo(replica)
+		if replicaOK {
+			concurrencyDetails = append(concurrencyDetails, gin.H{
+				"index":           replicaIndex,
+				"active":          snapshot.Active,
+				"limit":           replicaConcurrency,
+				"egress_assigned": egressIsAssigned,
+			})
 		}
 		buckets := replica.RecentRequestsSnapshot(time.Now())
 		if index == 0 {
@@ -182,6 +194,7 @@ func (h *Handler) buildCodexReplicaGroupEntry(replicas []*coreauth.Auth) gin.H {
 	entry["replica_total_capacity"] = count * concurrency
 	entry["replica_active"] = active
 	entry["replica_egress_assigned"] = egressAssigned
+	entry["replica_concurrency_details"] = concurrencyDetails
 	entry["success"] = success
 	entry["failed"] = failed
 	entry["recent_requests"] = recent
