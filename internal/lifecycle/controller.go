@@ -26,10 +26,11 @@ var (
 
 // Hooks apply service-owned side effects around lifecycle transitions.
 type Hooks struct {
-	Activate     func(context.Context) (Components, error)
-	BeginDrain   func()
-	ResumeActive func(context.Context) error
-	Deactivate   func(context.Context) error
+	PrepareReadOnly func(context.Context) error
+	Activate        func(context.Context) (Components, error)
+	BeginDrain      func()
+	ResumeActive    func(context.Context) error
+	Deactivate      func(context.Context) error
 }
 
 // Status is a safe lifecycle snapshot for management and release checks.
@@ -55,13 +56,14 @@ type Components struct {
 
 // Controller serializes role changes and tracks admitted proxy requests.
 type Controller struct {
-	mu         sync.Mutex
-	changed    chan struct{}
-	mode       Mode
-	generation uint64
-	active     int64
-	hooks      Hooks
-	components Components
+	transitionMu sync.Mutex
+	mu           sync.Mutex
+	changed      chan struct{}
+	mode         Mode
+	generation   uint64
+	active       int64
+	hooks        Hooks
+	components   Components
 }
 
 func (c *Controller) SetComponents(components Components) {
@@ -181,6 +183,8 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 	if !target.Valid() {
 		return c.Status(), fmt.Errorf("%w: target %q", ErrInvalidTransition, target)
 	}
+	c.transitionMu.Lock()
+	defer c.transitionMu.Unlock()
 	for {
 		c.mu.Lock()
 		if expectedGeneration != 0 && expectedGeneration != c.generation {
@@ -210,40 +214,60 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 				continue
 			}
 		}
-
-		switch {
-		case current == ModeServingReadOnly && target == ModeActive:
-			if hooks.Activate != nil {
-				components, errActivate := hooks.Activate(ctx)
-				if errActivate != nil {
-					status := c.statusLocked()
-					c.mu.Unlock()
-					return status, errActivate
-				}
-				c.components = components
-			}
-		case current == ModeActive && target == ModeDraining:
+		// These transitions do not have fallible preparation. Commit them while
+		// holding the state lock so request admission changes atomically.
+		if current == ModeServingReadOnly && target == ModeStandby {
+			c.mode = target
+			c.generation++
+			c.signalLocked()
+			status := c.statusLocked()
+			c.mu.Unlock()
+			return status, nil
+		}
+		if current == ModeActive && target == ModeDraining {
+			c.mode = target
+			c.generation++
+			c.components.AutoRefresh = false
+			c.signalLocked()
+			c.mu.Unlock()
 			if hooks.BeginDrain != nil {
 				hooks.BeginDrain()
 			}
-			c.components.AutoRefresh = false
+			return c.Status(), nil
+		}
+		c.mu.Unlock()
+
+		var components Components
+		var errHook error
+		switch {
+		case current == ModeStandby && target == ModeServingReadOnly:
+			if hooks.PrepareReadOnly != nil {
+				errHook = hooks.PrepareReadOnly(ctx)
+			}
+		case current == ModeServingReadOnly && target == ModeActive:
+			if hooks.Activate != nil {
+				components, errHook = hooks.Activate(ctx)
+			}
 		case current == ModeDraining && target == ModeActive:
 			if hooks.ResumeActive != nil {
-				if errResume := hooks.ResumeActive(ctx); errResume != nil {
-					status := c.statusLocked()
-					c.mu.Unlock()
-					return status, errResume
-				}
+				errHook = hooks.ResumeActive(ctx)
 			}
-			c.components.AutoRefresh = true
 		case current == ModeDraining && target == ModeStandby:
 			if hooks.Deactivate != nil {
-				if errDeactivate := hooks.Deactivate(ctx); errDeactivate != nil {
-					status := c.statusLocked()
-					c.mu.Unlock()
-					return status, errDeactivate
-				}
+				errHook = hooks.Deactivate(ctx)
 			}
+		}
+		if errHook != nil {
+			return c.Status(), errHook
+		}
+
+		c.mu.Lock()
+		switch {
+		case current == ModeServingReadOnly && target == ModeActive:
+			c.components = components
+		case current == ModeDraining && target == ModeActive:
+			c.components.AutoRefresh = true
+		case current == ModeDraining && target == ModeStandby:
 			c.components = Components{}
 		}
 		c.mode = target

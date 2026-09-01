@@ -18,6 +18,7 @@ func TestControllerAdmissionAndTransitions(t *testing.T) {
 	}
 	controller := NewController(ModeStandby)
 	controller.SetHooks(Hooks{
+		PrepareReadOnly: func(context.Context) error { record("prepare-readonly"); return nil },
 		Activate: func(context.Context) (Components, error) {
 			record("activate")
 			return Components{WriterLeaseHeld: true}, nil
@@ -61,7 +62,7 @@ func TestControllerAdmissionAndTransitions(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"activate", "drain", "deactivate"}
+	want := []string{"prepare-readonly", "activate", "drain", "deactivate"}
 	if len(events) != len(want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
@@ -69,6 +70,47 @@ func TestControllerAdmissionAndTransitions(t *testing.T) {
 		if events[i] != want[i] {
 			t.Fatalf("events = %v, want %v", events, want)
 		}
+	}
+}
+
+func TestControllerPreparesReadOnlyBeforeAdmissionWithoutHoldingStateLock(t *testing.T) {
+	controller := NewController(ModeStandby)
+	prepareStarted := make(chan struct{})
+	allowPrepare := make(chan struct{})
+	controller.SetHooks(Hooks{PrepareReadOnly: func(context.Context) error {
+		if got := controller.Status().Mode; got != ModeStandby {
+			return errors.New("mode changed before read-only preparation completed")
+		}
+		close(prepareStarted)
+		<-allowPrepare
+		return nil
+	}})
+
+	transitionDone := make(chan error, 1)
+	go func() {
+		_, errTransition := controller.Transition(context.Background(), ModeServingReadOnly, 0)
+		transitionDone <- errTransition
+	}()
+
+	select {
+	case <-prepareStarted:
+	case <-time.After(time.Second):
+		t.Fatal("read-only preparation did not start")
+	}
+	if _, admitted := controller.AdmitProxy(); admitted {
+		t.Fatal("standby admitted traffic before read-only preparation completed")
+	}
+	close(allowPrepare)
+	select {
+	case errTransition := <-transitionDone:
+		if errTransition != nil {
+			t.Fatalf("standby -> serving-readonly error = %v", errTransition)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read-only transition deadlocked")
+	}
+	if got := controller.Status().Mode; got != ModeServingReadOnly {
+		t.Fatalf("mode after read-only preparation = %s", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package cliproxy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,6 +54,35 @@ func TestBuilderStandbyDoesNotAcquireWriterLease(t *testing.T) {
 	}
 	if service.writerLease != nil {
 		t.Fatal("standby acquired writer lease")
+	}
+}
+
+func TestBuilderStandbyLoadsCredentialsBeforeServingReadOnly(t *testing.T) {
+	authDir := t.TempDir()
+	if gate, ok := sdkAuth.GetTokenStore().(interface{ SetWritesEnabled(bool) }); ok {
+		t.Cleanup(func() { gate.SetWritesEnabled(true) })
+	}
+	if errWrite := os.WriteFile(filepath.Join(authDir, "codex.json"), []byte(`{"type":"codex","email":"test@example.com"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+	t.Setenv("CLIPROXY_LIFECYCLE_MODE", string(lifecycle.ModeStandby))
+	t.Setenv("CLIPROXY_WRITER_LOCK_PATH", filepath.Join(t.TempDir(), "writer.lock"))
+	service, errBuild := NewBuilder().WithConfig(&config.Config{AuthDir: authDir}).WithConfigPath(filepath.Join(authDir, "config.yaml")).Build()
+	if errBuild != nil {
+		t.Fatalf("Build() error = %v", errBuild)
+	}
+	if got := len(service.coreManager.List()); got != 0 {
+		t.Fatalf("standby auth count before transition = %d, want 0", got)
+	}
+	status, errTransition := service.lifecycleController.Transition(context.Background(), lifecycle.ModeServingReadOnly, 0)
+	if errTransition != nil {
+		t.Fatalf("standby -> serving-readonly error = %v", errTransition)
+	}
+	if status.Mode != lifecycle.ModeServingReadOnly || !status.AcceptingNew || status.CredentialWriter {
+		t.Fatalf("serving-readonly status = %+v", status)
+	}
+	if got := len(service.coreManager.List()); got != 1 {
+		t.Fatalf("serving-readonly auth count = %d, want 1", got)
 	}
 }
 

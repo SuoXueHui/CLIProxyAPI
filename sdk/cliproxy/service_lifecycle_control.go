@@ -28,10 +28,11 @@ func (s *Service) configureLifecycleControl() {
 		return
 	}
 	s.lifecycleController.SetHooks(lifecycle.Hooks{
-		Activate:     s.activateLifecycle,
-		BeginDrain:   s.beginLifecycleDrain,
-		ResumeActive: s.resumeLifecycleActive,
-		Deactivate:   s.deactivateLifecycle,
+		PrepareReadOnly: s.prepareLifecycleReadOnly,
+		Activate:        s.activateLifecycle,
+		BeginDrain:      s.beginLifecycleDrain,
+		ResumeActive:    s.resumeLifecycleActive,
+		Deactivate:      s.deactivateLifecycle,
 	})
 	s.setLifecycleWritesEnabled(s.lifecycleController.Status().CredentialWriter)
 	s.lifecycleController.SetComponents(lifecycle.Components{
@@ -40,6 +41,24 @@ func (s *Service) configureLifecycleControl() {
 		IPv6Enabled:     false,
 		PluginRuntime:   s.lifecycleController.Status().Mode == lifecycle.ModeActive && s.pluginHost != nil,
 	})
+}
+
+// prepareLifecycleReadOnly loads current credentials before proxy admission is enabled.
+// Writer gates remain closed and no background refresh, plugin, watcher, or IPv6 work starts.
+func (s *Service) prepareLifecycleReadOnly(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.setLifecycleWritesEnabled(false)
+	if s.coreManager == nil {
+		return nil
+	}
+	if errLoad := s.coreManager.Load(ctx); errLoad != nil {
+		return fmt.Errorf("load auth store for read-only serving: %w", errLoad)
+	}
+	return nil
 }
 
 func (s *Service) lifecycleActive() bool {
