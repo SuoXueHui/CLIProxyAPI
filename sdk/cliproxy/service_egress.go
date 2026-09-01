@@ -159,7 +159,7 @@ func (s *Service) transitionEgressLocked(ctx context.Context, cfg egress.Config,
 		oldController = s.egressState.controller
 	}
 	if oldController != nil && oldController.Equivalent(cfg) {
-		return nil
+		return s.reconcileEquivalentEgressLocked(ctx, oldController)
 	}
 	candidate, errCandidate := egress.NewController(cfg)
 	if errCandidate != nil {
@@ -229,6 +229,65 @@ func (s *Service) transitionEgressLocked(ctx context.Context, cfg egress.Config,
 	if oldController != nil {
 		if errClose := oldController.CloseExcept(candidate.ManagedAssignments()); errClose != nil {
 			log.WithError(errClose).Warn("failed to remove retired IPv6 egress addresses")
+		}
+	}
+	return nil
+}
+
+// reconcileEquivalentEgressLocked rebinds runtime auth objects after a store
+// reload without replacing the controller that owns the kernel addresses.
+func (s *Service) reconcileEquivalentEgressLocked(ctx context.Context, controller *egress.Controller) error {
+	if s == nil || s.coreManager == nil || controller == nil {
+		return nil
+	}
+	prior := controller.ManagedAssignments()
+	auths := sortedRuntimeAuths(s.coreManager.List())
+	targets := make(map[string]string, len(auths))
+	desired := make(map[string]struct{}, len(auths))
+	cleanupNew := func() {
+		for authID := range controller.ManagedAssignments() {
+			if _, existed := prior[authID]; !existed {
+				_ = controller.Release(authID)
+			}
+		}
+	}
+	for _, current := range auths {
+		if errContext := ctx.Err(); errContext != nil {
+			cleanupNew()
+			return errContext
+		}
+		desired[current.ID] = struct{}{}
+		ip, errAssign := controller.Assign(current.ID)
+		if errAssign != nil {
+			cleanupNew()
+			return fmt.Errorf("reconcile IPv6 egress for auth %q: %w", current.ID, errAssign)
+		}
+		if ip != nil {
+			targets[current.ID] = ip.String()
+		}
+	}
+	originals := make([]*coreauth.Auth, 0, len(auths))
+	for _, current := range auths {
+		updated := current.Clone()
+		updated.EgressIPv6 = targets[updated.ID]
+		if updated.EgressIPv6 == current.EgressIPv6 {
+			continue
+		}
+		if _, errUpdate := s.coreManager.Update(coreauth.WithSkipPersist(ctx), updated); errUpdate != nil {
+			rollbackRuntimeEgress(ctx, s.coreManager, originals)
+			cleanupNew()
+			return fmt.Errorf("rebind IPv6 egress for auth %q: %w", updated.ID, errUpdate)
+		}
+		originals = append(originals, current.Clone())
+	}
+	for authID := range controller.ManagedAssignments() {
+		if _, keep := desired[authID]; keep {
+			continue
+		}
+		if errRelease := controller.Release(authID); errRelease != nil {
+			rollbackRuntimeEgress(ctx, s.coreManager, originals)
+			cleanupNew()
+			return fmt.Errorf("release stale IPv6 egress for auth %q: %w", authID, errRelease)
 		}
 	}
 	return nil

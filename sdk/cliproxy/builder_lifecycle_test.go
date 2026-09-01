@@ -7,8 +7,10 @@ import (
 	"runtime"
 	"testing"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/egress"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	internalregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -132,5 +134,22 @@ func TestBuilderActiveRequiresExclusiveWriterLease(t *testing.T) {
 	}
 	if _, errSecond := lifecycleTestBuilder(t).Build(); errSecond == nil {
 		t.Fatal("second active Build() acquired the same writer lease")
+	}
+}
+
+func TestLifecyclePluginRuntimeRejectsMissingRequiredPlugin(t *testing.T) {
+	enabled := true
+	service := &Service{
+		cfg: &config.Config{Plugins: internalconfig.PluginsConfig{
+			Enabled: true,
+			Configs: map[string]internalconfig.PluginInstanceConfig{
+				"required-plugin": {Enabled: &enabled},
+			},
+		}},
+		pluginHost: pluginhost.New(),
+	}
+	ready, errRuntime := service.lifecyclePluginRuntimeState()
+	if errRuntime == nil || ready {
+		t.Fatalf("missing required plugin runtime = %t, %v", ready, errRuntime)
 	}
 }

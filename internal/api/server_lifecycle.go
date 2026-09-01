@@ -19,11 +19,16 @@ func (s *Server) lifecycleMiddleware() gin.HandlerFunc {
 			return
 		}
 		if strings.HasPrefix(c.Request.URL.Path, "/v0/management") || strings.HasPrefix(c.Request.URL.Path, "/v0/resource/plugins/") {
-			if s.lifecycleController.Status().Mode != lifecycle.ModeActive {
+			done, admitted := s.lifecycleController.AdmitProxy()
+			if !admitted || s.lifecycleController.Status().Mode != lifecycle.ModeActive {
+				if admitted {
+					done()
+				}
 				c.Header("Retry-After", "1")
 				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "lifecycle_read_only", "mode": s.lifecycleController.Status().Mode})
 				return
 			}
+			defer done()
 			c.Next()
 			return
 		}

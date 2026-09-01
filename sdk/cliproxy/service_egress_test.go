@@ -50,6 +50,43 @@ func TestServiceInitializesLoadedAuthEgressBeforeServerStart(t *testing.T) {
 	}
 }
 
+func TestServiceRebindsEquivalentEgressAfterAuthStoreReload(t *testing.T) {
+	statePath := installFakeIPCommand(t)
+	cfg := &config.Config{
+		IPv6Egress: egress.Config{Enabled: true, Prefix: "2001:db8::/120", Interface: "eth0"},
+	}
+	store := &startupEgressStore{auths: []*coreauth.Auth{{ID: "loaded", Provider: "unknown", Status: coreauth.StatusActive}}}
+	manager := coreauth.NewManager(store, nil, nil)
+	service := &Service{cfg: cfg, coreManager: manager}
+	if errLoad := manager.Load(context.Background()); errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	if errEgress := service.initializeLoadedAuthEgress(context.Background()); errEgress != nil {
+		t.Fatal(errEgress)
+	}
+	before, _ := manager.GetByID("loaded")
+	if before == nil || before.EgressIPv6 == "" {
+		t.Fatal("initial auth had no IPv6 egress")
+	}
+	if errLoad := manager.Load(context.Background()); errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	reloaded, _ := manager.GetByID("loaded")
+	if reloaded == nil || reloaded.EgressIPv6 != "" {
+		t.Fatalf("store reload retained runtime IPv6 field: %#v", reloaded)
+	}
+	if errEgress := service.initializeLoadedAuthEgress(context.Background()); errEgress != nil {
+		t.Fatal(errEgress)
+	}
+	rebound, _ := manager.GetByID("loaded")
+	if rebound == nil || rebound.EgressIPv6 != before.EgressIPv6 {
+		t.Fatalf("equivalent egress rebind = %#v, want %q", rebound, before.EgressIPv6)
+	}
+	if got := readFakeIPState(t, statePath); len(got) != 1 {
+		t.Fatalf("equivalent egress addresses = %#v, want one", got)
+	}
+}
+
 func TestServiceIPv6EgressKeepsAllocatorAcrossIncrementalAuthBatches(t *testing.T) {
 	installFakeIPCommand(t)
 	cfg := &config.Config{IPv6Egress: egress.Config{Enabled: true, Prefix: "2001:db8::/124", Interface: "eth0"}}

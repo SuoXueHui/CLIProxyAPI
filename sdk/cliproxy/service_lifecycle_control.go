@@ -20,6 +20,10 @@ type lifecycleWriteToggle interface {
 	SetWritesEnabled(bool)
 }
 
+type lifecycleWriteStatus interface {
+	WritesEnabled() bool
+}
+
 type lifecyclePluginWriteToggle interface {
 	SetAuthWritesEnabled(bool)
 }
@@ -36,12 +40,7 @@ func (s *Service) configureLifecycleControl() {
 		Deactivate:      s.deactivateLifecycle,
 	})
 	s.setLifecycleWritesEnabled(s.lifecycleController.Status().CredentialWriter)
-	s.lifecycleController.SetComponents(lifecycle.Components{
-		WriterLeaseHeld: s.writerLease != nil,
-		AutoRefresh:     false,
-		IPv6Enabled:     false,
-		PluginRuntime:   s.lifecycleController.Status().Mode == lifecycle.ModeActive && s.pluginHost != nil,
-	})
+	s.lifecycleController.SetComponents(s.snapshotLifecycleComponents(false))
 }
 
 // prepareLifecycleReadOnly loads current credentials before proxy admission is enabled.
@@ -88,7 +87,7 @@ func (s *Service) activateLifecycle(ctx context.Context) (lifecycle.Components, 
 	return s.activateLifecycleLocked(ctx)
 }
 
-func (s *Service) activateLifecycleLocked(ctx context.Context) (lifecycle.Components, error) {
+func (s *Service) activateLifecycleLocked(ctx context.Context) (components lifecycle.Components, err error) {
 	if s.writerLease == nil {
 		lease, errLease := lifecycle.AcquireWriterLease(s.writerLeasePath)
 		if errLease != nil {
@@ -109,9 +108,13 @@ func (s *Service) activateLifecycleLocked(ctx context.Context) (lifecycle.Compon
 		s.stopLifecyclePlugins(context.Background())
 		s.setLifecycleWritesEnabled(false)
 		_ = s.releaseWriterLease()
+		components = s.snapshotLifecycleComponents(false)
 	}()
 	if !s.syncPluginRuntimeConfig(ctx) {
 		return lifecycle.Components{}, fmt.Errorf("activate plugin runtime during promotion")
+	}
+	if _, errPlugin := s.lifecyclePluginRuntimeState(); errPlugin != nil {
+		return lifecycle.Components{}, errPlugin
 	}
 	if errLoad := s.reloadLifecycleAuthState(ctx); errLoad != nil {
 		return lifecycle.Components{}, fmt.Errorf("reload auth store during promotion: %w", errLoad)
@@ -127,11 +130,7 @@ func (s *Service) activateLifecycleLocked(ctx context.Context) (lifecycle.Compon
 		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
 	}
 	rollback = false
-	s.cfgMu.RLock()
-	ipv6Enabled := s.cfg != nil && s.cfg.IPv6Egress.Enabled
-	pluginRuntime := s.cfg != nil && s.cfg.Plugins.Enabled
-	s.cfgMu.RUnlock()
-	return lifecycle.Components{WriterLeaseHeld: true, AutoRefresh: s.coreManager != nil, IPv6Enabled: ipv6Enabled, PluginRuntime: pluginRuntime}, nil
+	return s.snapshotLifecycleComponents(s.coreManager != nil), nil
 }
 
 func (s *Service) reloadLifecycleAuthState(ctx context.Context) error {
@@ -180,21 +179,66 @@ func (s *Service) setLifecycleComponents(autoRefresh bool) {
 	if s == nil || s.lifecycleController == nil {
 		return
 	}
-	s.cfgMu.RLock()
-	ipv6Enabled := s.cfg != nil && s.cfg.IPv6Egress.Enabled
-	pluginRuntime := s.cfg != nil && s.cfg.Plugins.Enabled
-	s.cfgMu.RUnlock()
-	s.lifecycleController.SetComponents(lifecycle.Components{
-		WriterLeaseHeld: s.writerLease != nil,
-		AutoRefresh:     autoRefresh,
-		IPv6Enabled:     ipv6Enabled,
-		PluginRuntime:   pluginRuntime,
-	})
+	s.lifecycleController.SetComponents(s.snapshotLifecycleComponents(autoRefresh))
 }
 
-func (s *Service) deactivateLifecycle(ctx context.Context) error {
+func (s *Service) snapshotLifecycleComponents(autoRefresh bool) lifecycle.Components {
 	if s == nil {
-		return nil
+		return lifecycle.Components{}
+	}
+	writesEnabled := false
+	if status, ok := any(s.coreManager).(lifecycleWriteStatus); ok {
+		writesEnabled = status.WritesEnabled()
+	}
+	pluginRuntime, _ := s.lifecyclePluginRuntimeState()
+	return lifecycle.Components{
+		CredentialWriter: writesEnabled,
+		WriterLeaseHeld:  s.writerLease != nil,
+		AutoRefresh:      autoRefresh,
+		IPv6Enabled:      s.lifecycleEgressEnabled(),
+		PluginRuntime:    pluginRuntime,
+	}
+}
+
+func (s *Service) lifecycleEgressEnabled() bool {
+	if s == nil {
+		return false
+	}
+	s.egressMu.Lock()
+	defer s.egressMu.Unlock()
+	if s.egressState == nil || s.egressState.controller == nil {
+		return false
+	}
+	cfg := s.currentEgressConfigLocked()
+	return cfg.Enabled && s.egressState.controller.Equivalent(cfg)
+}
+
+func (s *Service) lifecyclePluginRuntimeState() (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	s.cfgMu.RLock()
+	cfg := s.cfg
+	s.cfgMu.RUnlock()
+	if cfg == nil || !cfg.Plugins.Enabled {
+		return false, nil
+	}
+	expected := 0
+	for id, item := range cfg.Plugins.Configs {
+		if item.Enabled == nil || !*item.Enabled {
+			continue
+		}
+		expected++
+		if s.pluginHost == nil || !s.pluginHost.PluginRegistered(id) {
+			return false, fmt.Errorf("activate plugin runtime: required plugin %q is not registered", id)
+		}
+	}
+	return expected > 0, nil
+}
+
+func (s *Service) deactivateLifecycle(ctx context.Context) (lifecycle.Components, error) {
+	if s == nil {
+		return lifecycle.Components{}, nil
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -203,10 +247,13 @@ func (s *Service) deactivateLifecycle(ctx context.Context) error {
 	s.setLifecycleWritesEnabled(false)
 	s.stopLifecycleBackground()
 	if errEgress := s.transitionEgress(ctx, egress.Config{}); errEgress != nil {
-		return fmt.Errorf("release IPv6 egress during demotion: %w", errEgress)
+		return s.snapshotLifecycleComponents(false), fmt.Errorf("release IPv6 egress during demotion: %w", errEgress)
 	}
 	s.stopLifecyclePlugins(ctx)
-	return s.releaseWriterLease()
+	if errRelease := s.releaseWriterLease(); errRelease != nil {
+		return s.snapshotLifecycleComponents(false), errRelease
+	}
+	return s.snapshotLifecycleComponents(false), nil
 }
 
 func (s *Service) stopLifecycleBackground() {

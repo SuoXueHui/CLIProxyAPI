@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,6 +43,46 @@ func TestLifecycleMiddlewareGatesProxyAndManagementWrites(t *testing.T) {
 		if recorder.Code != tc.want {
 			t.Fatalf("%s %s = %d, want %d", tc.method, tc.path, recorder.Code, tc.want)
 		}
+	}
+}
+
+func TestLifecycleMiddlewareTracksManagementWritesDuringDrain(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controller := lifecycle.NewController(lifecycle.ModeActive)
+	server := &Server{lifecycleController: controller}
+	engine := gin.New()
+	engine.Use(server.lifecycleMiddleware())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	engine.PUT("/v0/management/config.yaml", func(c *gin.Context) {
+		close(started)
+		<-release
+		c.Status(http.StatusOK)
+	})
+
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", nil))
+		if recorder.Code != http.StatusOK {
+			t.Errorf("management write status = %d, want %d", recorder.Code, http.StatusOK)
+		}
+	}()
+	<-started
+	if got := controller.Status().ActiveRequests; got != 1 {
+		t.Fatalf("active management writes = %d, want 1", got)
+	}
+	if _, errDrain := controller.Transition(context.Background(), lifecycle.ModeDraining, 0); errDrain != nil {
+		t.Fatalf("active -> draining error = %v", errDrain)
+	}
+	if _, errStandby := controller.Transition(context.Background(), lifecycle.ModeStandby, 0); !errors.Is(errStandby, lifecycle.ErrActiveRequests) {
+		t.Fatalf("draining -> standby error = %v, want active requests", errStandby)
+	}
+	close(release)
+	<-requestDone
+	if _, errStandby := controller.Transition(context.Background(), lifecycle.ModeStandby, 0); errStandby != nil {
+		t.Fatalf("draining -> standby after management write error = %v", errStandby)
 	}
 }
 

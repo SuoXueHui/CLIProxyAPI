@@ -28,7 +28,7 @@ func TestControllerAdmissionAndTransitions(t *testing.T) {
 			record("resume")
 			return Components{WriterLeaseHeld: true}, nil
 		},
-		Deactivate: func(context.Context) error { record("deactivate"); return nil },
+		Deactivate: func(context.Context) (Components, error) { record("deactivate"); return Components{}, nil },
 	})
 
 	if _, admitted := controller.AdmitProxy(); admitted {
@@ -121,7 +121,7 @@ func TestControllerDrainingReturnsRetryableStateAndAllowsRollback(t *testing.T) 
 	controller := NewController(ModeActive)
 	controller.SetHooks(Hooks{
 		ResumeActive: func(context.Context) (Components, error) { return Components{WriterLeaseHeld: true}, nil },
-		Deactivate:   func(context.Context) error { return nil },
+		Deactivate:   func(context.Context) (Components, error) { return Components{}, nil },
 	})
 	done, admitted := controller.AdmitProxy()
 	if !admitted {
@@ -216,6 +216,19 @@ func TestControllerTransitionLockHonorsContext(t *testing.T) {
 	<-firstDone
 }
 
+func TestControllerCanceledTransitionDoesNotCommit(t *testing.T) {
+	controller := NewController(ModeActive)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, errTransition := controller.Transition(ctx, ModeDraining, 0); !errors.Is(errTransition, context.Canceled) {
+		t.Fatalf("canceled transition error = %v, want canceled", errTransition)
+	}
+	status := controller.Status()
+	if status.Mode != ModeActive || !status.AcceptingNew {
+		t.Fatalf("canceled transition changed state: %+v", status)
+	}
+}
+
 func TestControllerRejectsStaleGenerationAndActivationFailure(t *testing.T) {
 	controller := NewController(ModeServingReadOnly)
 	controller.SetHooks(Hooks{Activate: func(context.Context) (Components, error) { return Components{}, errors.New("lease busy") }})
@@ -231,6 +244,30 @@ func TestControllerRejectsStaleGenerationAndActivationFailure(t *testing.T) {
 	}
 	if !controller.Status().AcceptingNew {
 		t.Fatal("activation failure did not restore read-only admission")
+	}
+}
+
+func TestControllerPublishesActualComponentsAfterResumeFailure(t *testing.T) {
+	controller := NewController(ModeActive)
+	controller.SetComponents(Components{
+		CredentialWriter: true,
+		WriterLeaseHeld:  true,
+		AutoRefresh:      true,
+		IPv6Enabled:      true,
+		PluginRuntime:    true,
+	})
+	controller.SetHooks(Hooks{ResumeActive: func(context.Context) (Components, error) {
+		return Components{}, errors.New("restore failed")
+	}})
+	if _, errDrain := controller.Transition(context.Background(), ModeDraining, 0); errDrain != nil {
+		t.Fatal(errDrain)
+	}
+	status, errResume := controller.Transition(context.Background(), ModeActive, 0)
+	if errResume == nil || status.Mode != ModeDraining {
+		t.Fatalf("resume failure = %+v, %v", status, errResume)
+	}
+	if status.CredentialWriter || status.WriterLeaseHeld || status.AutoRefresh || status.IPv6Enabled || status.PluginRuntime {
+		t.Fatalf("resume failure retained stale components: %+v", status)
 	}
 }
 

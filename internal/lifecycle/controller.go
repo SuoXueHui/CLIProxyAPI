@@ -31,7 +31,7 @@ type Hooks struct {
 	Activate        func(context.Context) (Components, error)
 	BeginDrain      func()
 	ResumeActive    func(context.Context) (Components, error)
-	Deactivate      func(context.Context) error
+	Deactivate      func(context.Context) (Components, error)
 }
 
 // Status is a safe lifecycle snapshot for management and release checks.
@@ -49,10 +49,11 @@ type Status struct {
 
 // Components reports service prerequisites that are applied outside the state machine.
 type Components struct {
-	WriterLeaseHeld bool
-	AutoRefresh     bool
-	IPv6Enabled     bool
-	PluginRuntime   bool
+	CredentialWriter bool
+	WriterLeaseHeld  bool
+	AutoRefresh      bool
+	IPv6Enabled      bool
+	PluginRuntime    bool
 }
 
 // Controller serializes role changes and tracks admitted proxy requests.
@@ -89,6 +90,9 @@ func NewController(mode Mode) *Controller {
 		admissionOpen: mode == ModeActive || mode == ModeServingReadOnly,
 		generation:    1,
 		changed:       make(chan struct{}),
+	}
+	if mode == ModeActive {
+		controller.components = Components{CredentialWriter: true, WriterLeaseHeld: true, AutoRefresh: true}
 	}
 	controller.transition <- struct{}{}
 	return controller
@@ -144,7 +148,7 @@ func (c *Controller) statusLocked() Status {
 		Generation:       c.generation,
 		AcceptingNew:     c.admissionOpen,
 		ActiveRequests:   c.active,
-		CredentialWriter: c.mode == ModeActive || c.mode == ModeDraining,
+		CredentialWriter: c.components.CredentialWriter,
 		WriterLeaseHeld:  c.components.WriterLeaseHeld,
 		AutoRefresh:      c.components.AutoRefresh,
 		IPv6Enabled:      c.components.IPv6Enabled,
@@ -199,6 +203,9 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 	case <-c.transition:
 	}
 	defer func() { c.transition <- struct{}{} }()
+	if errContext := ctx.Err(); errContext != nil {
+		return c.Status(), errContext
+	}
 
 	c.mu.Lock()
 	if expectedGeneration != 0 && expectedGeneration != c.generation {
@@ -230,10 +237,13 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 	// still active, return a retryable state instead of holding the transition
 	// lock for the lifetime of an SSE or WebSocket session.
 	if current == ModeServingReadOnly && (target == ModeActive || target == ModeStandby) {
+		admissionChanged := c.admissionOpen
 		c.admissionOpen = false
 		if c.active > 0 {
-			c.generation++
-			c.signalLocked()
+			if admissionChanged {
+				c.generation++
+				c.signalLocked()
+			}
 			status := c.statusLocked()
 			c.mu.Unlock()
 			return status, ErrActiveRequests
@@ -283,11 +293,12 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 		}
 	case current == ModeDraining && target == ModeStandby:
 		if hooks.Deactivate != nil {
-			errHook = hooks.Deactivate(ctx)
+			components, errHook = hooks.Deactivate(ctx)
 		}
 	}
 	if errHook != nil {
 		c.mu.Lock()
+		c.components = components
 		if current == ModeServingReadOnly {
 			c.admissionOpen = true
 			c.signalLocked()
@@ -303,7 +314,7 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 		c.components = components
 		c.admissionOpen = true
 	case current == ModeDraining && target == ModeStandby:
-		c.components = Components{}
+		c.components = components
 		c.admissionOpen = false
 	case current == ModeStandby && target == ModeServingReadOnly:
 		c.admissionOpen = true
