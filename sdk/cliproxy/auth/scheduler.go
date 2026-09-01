@@ -257,6 +257,9 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
 	}
+	if codexReplicaConcurrencySaturatedInShards([]*modelScheduler{shard}, eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin) {
+		return nil, newCodexReplicaConcurrencyError(0)
+	}
 	return nil, shard.unavailableErrorLocked(provider, model, predicate)
 }
 
@@ -318,6 +321,9 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if picked := shard.pickReadyLocked(false, strategy, predicate); picked != nil {
 			return picked, providerKey, nil
 		}
+		if codexReplicaConcurrencySaturatedInShards([]*modelScheduler{shard}, eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin) {
+			return nil, "", newCodexReplicaConcurrencyError(0)
+		}
 		return nil, "", shard.unavailableErrorLocked("mixed", model, predicate)
 	}
 
@@ -346,6 +352,9 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 	}
 	if !hasCandidate {
+		if codexReplicaConcurrencySaturatedInShards(candidateShards, eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin) {
+			return nil, "", newCodexReplicaConcurrencyError(0)
+		}
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 	if s.adaptive.config.Enabled {
@@ -498,22 +507,45 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 // scheduledAuthPredicate filters request-ineligible auths before scheduler state advances.
 func scheduledAuthPredicate(eligibility authSelectionEligibility, tried map[string]struct{}, pinnedAuthID string, requirePositiveWeight bool) func(*scheduledAuth) bool {
 	return func(entry *scheduledAuth) bool {
-		if entry == nil || entry.auth == nil || !eligibility.allows(entry.auth) {
+		return scheduledAuthBaseEligible(entry, eligibility, tried, pinnedAuthID, requirePositiveWeight) && CodexReplicaConcurrencyAvailable(entry.auth)
+	}
+}
+
+func scheduledAuthBaseEligible(entry *scheduledAuth, eligibility authSelectionEligibility, tried map[string]struct{}, pinnedAuthID string, requirePositiveWeight bool) bool {
+	if entry == nil || entry.auth == nil || !eligibility.allows(entry.auth) {
+		return false
+	}
+	if requirePositiveWeight && (entry.meta == nil || entry.meta.weight <= 0) {
+		return false
+	}
+	if pinnedAuthID != "" && entry.auth.ID != pinnedAuthID {
+		return false
+	}
+	if len(tried) > 0 {
+		if _, ok := tried[entry.auth.ID]; ok {
 			return false
 		}
-		if requirePositiveWeight && (entry.meta == nil || entry.meta.weight <= 0) {
-			return false
+	}
+	return true
+}
+
+// codexReplicaConcurrencySaturatedInShards distinguishes local admission pressure
+// from credential cooldown when no ready replica can accept another request.
+func codexReplicaConcurrencySaturatedInShards(shards []*modelScheduler, eligibility authSelectionEligibility, tried map[string]struct{}, pinnedAuthID string, requirePositiveWeight bool) bool {
+	for _, shard := range shards {
+		if shard == nil {
+			continue
 		}
-		if pinnedAuthID != "" && entry.auth.ID != pinnedAuthID {
-			return false
-		}
-		if len(tried) > 0 {
-			if _, ok := tried[entry.auth.ID]; ok {
-				return false
+		for _, entry := range shard.entries {
+			if entry == nil || entry.state != scheduledStateReady || !scheduledAuthBaseEligible(entry, eligibility, tried, pinnedAuthID, requirePositiveWeight) {
+				continue
+			}
+			if !CodexReplicaConcurrencyAvailable(entry.auth) {
+				return true
 			}
 		}
-		return true
 	}
+	return false
 }
 
 // normalizeProviderKeys lowercases, trims, and de-duplicates provider keys while preserving order.

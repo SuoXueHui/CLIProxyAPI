@@ -399,6 +399,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					adaptiveLease.release(0, durationExec, false)
 					adaptiveLease = nil
 				}
+				// Local replica saturation is an admission signal, not an upstream
+				// credential failure. Rotate without recording quota or cooldown state.
+				if IsCodexReplicaConcurrencyError(errExec) {
+					delete(attempted, auth.ID)
+					authErr = errExec
+					break
+				}
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
@@ -917,6 +924,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil, unauthorizedRefreshTried)
 		if errStream != nil {
+			if IsCodexReplicaConcurrencyError(errStream) {
+				delete(attempted, auth.ID)
+				lastErr = errStream
+				continue
+			}
 			if selection != nil {
 				excludeAuth := shouldExcludeHomeAuthAfterStreamError(execCtx, auth, errStream)
 				if _, refreshedAlready := unauthorizedRefreshTried[auth.ID]; refreshedAlready || homeSameAuthRetries[auth.ID] > 0 {

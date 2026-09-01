@@ -160,6 +160,24 @@ func (s *Service) refreshPluginModelRegistrations(ctx context.Context) {
 	s.registerModelsForAuthBatch(ctx, s.coreManager.List())
 }
 
+// registerLoadedAuthModels closes the startup window where credentials are loaded
+// before the remote model catalog finishes its first refresh. The operation is
+// idempotent and rebuilds scheduler model membership for every loaded auth ID.
+func (s *Service) registerLoadedAuthModels(ctx context.Context) {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+	auths := s.coreManager.List()
+	if len(auths) == 0 {
+		return
+	}
+	s.registerAvailableExecutors(ctx, executorRegistrationOptions{auths: auths})
+	s.registerModelsForAuthBatch(ctx, auths)
+	if ctx == nil || ctx.Err() == nil {
+		s.coreManager.RefreshSchedulerAll()
+	}
+}
+
 func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*coreauth.Auth) {
 	if s == nil || s.coreManager == nil || len(auths) == 0 {
 		return

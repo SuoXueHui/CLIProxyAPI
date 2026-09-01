@@ -102,11 +102,21 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	authIndexFilter := strings.TrimSpace(c.Query("auth_index"))
 	auths := h.authManager.List()
 	files := make([]gin.H, 0, len(auths))
+	replicaGroups := make(map[string][]*coreauth.Auth)
 	for _, auth := range auths {
 		if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
 			continue
 		}
+		if group, _, _, _, replica := coreauth.CodexReplicaRuntimeInfo(auth); replica {
+			replicaGroups[group] = append(replicaGroups[group], auth)
+			continue
+		}
 		if entry := h.buildAuthFileEntry(auth); entry != nil {
+			files = append(files, entry)
+		}
+	}
+	for _, replicas := range replicaGroups {
+		if entry := h.buildCodexReplicaGroupEntry(replicas); entry != nil {
 			files = append(files, entry)
 		}
 	}
@@ -116,6 +126,68 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
 	c.JSON(200, gin.H{"files": files})
+}
+
+func (h *Handler) buildCodexReplicaGroupEntry(replicas []*coreauth.Auth) gin.H {
+	if len(replicas) == 0 {
+		return nil
+	}
+	sort.Slice(replicas, func(i, j int) bool {
+		_, left, _, _, _ := coreauth.CodexReplicaRuntimeInfo(replicas[i])
+		_, right, _, _, _ := coreauth.CodexReplicaRuntimeInfo(replicas[j])
+		return left < right
+	})
+	leader := replicas[0]
+	entry := h.buildAuthFileEntry(leader)
+	if entry == nil {
+		return nil
+	}
+	_, _, count, concurrency, ok := coreauth.CodexReplicaRuntimeInfo(leader)
+	if !ok {
+		return entry
+	}
+
+	var success int64
+	var failed int64
+	active := 0
+	egressAssigned := 0
+	recent := make([]coreauth.RecentRequestBucket, 0)
+	for index, replica := range replicas {
+		if replica == nil {
+			continue
+		}
+		success += replica.Success
+		failed += replica.Failed
+		active += coreauth.CodexReplicaConcurrencySnapshot(replica.ID).Active
+		if strings.TrimSpace(replica.EgressIPv6) != "" {
+			egressAssigned++
+		}
+		buckets := replica.RecentRequestsSnapshot(time.Now())
+		if index == 0 {
+			recent = buckets
+			continue
+		}
+		for bucketIndex := range recent {
+			if bucketIndex >= len(buckets) || recent[bucketIndex].Time != buckets[bucketIndex].Time {
+				continue
+			}
+			recent[bucketIndex].Success += buckets[bucketIndex].Success
+			recent[bucketIndex].Failed += buckets[bucketIndex].Failed
+		}
+	}
+	entry["id"] = strings.TrimSpace(leader.Attributes[coreauth.AttributeCodexReplicaGroup])
+	entry["replica_enabled"] = true
+	entry["replica_count"] = count
+	entry["replica_concurrency"] = concurrency
+	entry["replica_total_capacity"] = count * concurrency
+	entry["replica_active"] = active
+	entry["replica_egress_assigned"] = egressAssigned
+	entry["success"] = success
+	entry["failed"] = failed
+	entry["recent_requests"] = recent
+	// A group has several runtime addresses; expose only the count in the list.
+	delete(entry, "egress_ipv6")
+	return entry
 }
 
 func lockedAuthIndex(auth *coreauth.Auth) string {

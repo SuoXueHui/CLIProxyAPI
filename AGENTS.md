@@ -107,6 +107,13 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Usage and management projections may expose only an opaque member fingerprint derived from `chatgpt_user_id`, with issuer-scoped `sub` as the compatibility fallback. Never expose the raw member ID.
 - If the member fingerprint is unavailable, downstream usage systems must fall back to the exact auth file plus `auth_index`; they must not fall back to workspace-only aggregation.
 
+## Codex Runtime Replica Semantics
+- `codex_replica` is an optional physical-auth object with `enabled`, `count`, and `concurrency`; omission and `enabled: false` preserve the single-auth behavior. Defaults are 6 replicas and 10 concurrent requests per replica when the UI enables it.
+- Runtime replicas must have unique auth IDs, IPv6 bindings, device identities, scheduler state, cooldown state, and concurrency admission. They share the physical file name and stable `auth_index` so management and usage history remain one logical account.
+- One downstream request executes on exactly one replica. Replica mode distributes different requests; it must never duplicate one request across replicas.
+- Local replica saturation is not an upstream credential failure. Selection must skip full replicas, rotate after admission races without consuming the upstream retry budget, and return a distinct local 429 only when every eligible replica is full.
+- Persisted topology changes must reconcile additions and removals through the normal auth, model-registration, and IPv6 egress lifecycle without requiring a process restart. Preserve runtime state for unchanged replica IDs and serialize OAuth refresh by physical group.
+
 ## Code Conventions
 - Keep changes small and simple (KISS)
 - Comments in English only

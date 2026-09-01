@@ -149,7 +149,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 				applyFingerprintProfileAttribute(auth, metadata)
 			}
-			return auths, nil
+			return expandPluginCodexReplicas(auths, metadata)
 		}
 	}
 	if provider == "" || provider == "gemini-cli" {
@@ -197,6 +197,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	a := &coreauth.Auth{
 		ID:       id,
 		Provider: provider,
+		FileName: id,
 		Label:    label,
 		Prefix:   prefix,
 		Status:   status,
@@ -248,7 +249,32 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 		}
 	}
-	return []*coreauth.Auth{a}, nil
+	return coreauth.ExpandCodexReplicas(a)
+}
+
+// expandPluginCodexReplicas applies the physical-file policy after the active
+// plugin has produced the credential used by the production runtime.
+func expandPluginCodexReplicas(auths []*coreauth.Auth, sourceMetadata map[string]any) ([]*coreauth.Auth, error) {
+	expanded := make([]*coreauth.Auth, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
+			}
+			if replicaConfig, exists := sourceMetadata[coreauth.CodexReplicaMetadataKey]; exists {
+				auth.Metadata[coreauth.CodexReplicaMetadataKey] = replicaConfig
+			}
+		}
+		replicas, errExpand := coreauth.ExpandCodexReplicas(auth)
+		if errExpand != nil {
+			return nil, errExpand
+		}
+		expanded = append(expanded, replicas...)
+	}
+	return expanded, nil
 }
 
 func parsePluginFileAuths(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {

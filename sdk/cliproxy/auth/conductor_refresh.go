@@ -115,6 +115,9 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	if a == nil {
 		return false
 	}
+	if _, _, _, _, replica := CodexReplicaRuntimeInfo(a); replica && !IsCodexReplicaLeader(a) {
+		return false
+	}
 	if hasUnauthorizedAuthFailure(a) {
 		return false
 	}
@@ -505,11 +508,12 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		return nil, ErrCredentialWritesDisabled
 	}
 
-	lockValue, _ := m.refreshLocks.LoadOrStore(id, &authRefreshLock{})
+	lockID := m.refreshLockID(id)
+	lockValue, _ := m.refreshLocks.LoadOrStore(lockID, &authRefreshLock{})
 	lock, _ := lockValue.(*authRefreshLock)
 	if lock == nil {
 		lock = &authRefreshLock{}
-		m.refreshLocks.Store(id, lock)
+		m.refreshLocks.Store(lockID, lock)
 	}
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
@@ -607,4 +611,17 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		return saved, nil
 	}
 	return updated.Clone(), nil
+}
+
+func (m *Manager) refreshLockID(authID string) string {
+	if m == nil {
+		return authID
+	}
+	m.mu.RLock()
+	auth := m.auths[authID]
+	m.mu.RUnlock()
+	if group, _, _, _, ok := CodexReplicaRuntimeInfo(auth); ok {
+		return "codex-replica:" + group
+	}
+	return authID
 }

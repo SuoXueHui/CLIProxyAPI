@@ -68,6 +68,15 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}
+	// Replica admission is enforced at the shared HTTP/WebSocket boundary so
+	// every production Codex transport observes the same per-replica limit.
+	replicaLease, errAcquire := cliproxyauth.AcquireCodexReplicaConcurrency(auth)
+	if errAcquire != nil {
+		return cliproxyexecutor.Response{}, errAcquire
+	}
+	if replicaLease != nil {
+		defer replicaLease.Release()
+	}
 	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
 		return e.wsExec.Execute(ctx, auth, req, opts)
 	}
@@ -81,13 +90,61 @@ func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return nil, fmt.Errorf("codex auto executor: executor is nil")
 	}
+	replicaLease, errAcquire := cliproxyauth.AcquireCodexReplicaConcurrency(auth)
+	if errAcquire != nil {
+		return nil, errAcquire
+	}
+	releaseOnReturn := true
+	if replicaLease != nil {
+		defer func() {
+			if releaseOnReturn {
+				replicaLease.Release()
+			}
+		}()
+	}
+
+	var result *cliproxyexecutor.StreamResult
+	var errExecute error
 	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
-		return e.wsExec.ExecuteStream(ctx, auth, req, opts)
+		result, errExecute = e.wsExec.ExecuteStream(ctx, auth, req, opts)
+	} else if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+		errExecute = cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
+	} else {
+		result, errExecute = e.httpExec.ExecuteStream(ctx, auth, req, opts)
 	}
-	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
+	if errExecute != nil || result == nil || replicaLease == nil {
+		return result, errExecute
 	}
-	return e.httpExec.ExecuteStream(ctx, auth, req, opts)
+	releaseOnReturn = false
+	return wrapCodexReplicaStream(ctx, result, replicaLease), nil
+}
+
+// wrapCodexReplicaStream keeps the slot until the terminal chunk or request cancellation.
+func wrapCodexReplicaStream(ctx context.Context, result *cliproxyexecutor.StreamResult, lease *cliproxyauth.CodexReplicaConcurrencyLease) *cliproxyexecutor.StreamResult {
+	if result == nil || lease == nil {
+		return result
+	}
+	out := make(chan cliproxyexecutor.StreamChunk)
+	go func() {
+		defer close(out)
+		defer lease.Release()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case chunk, ok := <-result.Chunks:
+				if !ok {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case out <- chunk:
+				}
+			}
+		}
+	}()
+	return &cliproxyexecutor.StreamResult{Headers: result.Headers, Chunks: out}
 }
 
 func (e *CodexAutoExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {

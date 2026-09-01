@@ -335,6 +335,16 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if changed {
 		syncAuthFileMetadataFields(targetAuth, touchedRoots)
 	}
+	if _, touchedReplicaConfig := touchedRoots[coreauth.CodexReplicaMetadataKey]; touchedReplicaConfig {
+		if !strings.EqualFold(strings.TrimSpace(targetAuth.Provider), "codex") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "codex_replica is only supported for Codex auth files"})
+			return
+		}
+		if _, errReplicaConfig := coreauth.ParseCodexReplicaConfig(targetAuth.Metadata); errReplicaConfig != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errReplicaConfig.Error()})
+			return
+		}
+	}
 
 	if !changed {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
@@ -346,6 +356,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
+	}
+	if _, touchedReplicaConfig := touchedRoots[coreauth.CodexReplicaMetadataKey]; touchedReplicaConfig && h.postAuthPersistHook != nil {
+		if errHook := h.postAuthPersistHook(ctx, targetAuth.Clone()); errHook != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to apply Codex replica topology: %v", errHook)})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

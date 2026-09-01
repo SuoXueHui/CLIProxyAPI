@@ -197,6 +197,92 @@ func authUpdateID(update watcher.AuthUpdate) string {
 	return ""
 }
 
+// syncPersistedCodexReplicaTopology reconciles one physical Codex account with
+// its desired runtime replicas through the normal auth and egress lifecycle.
+func (s *Service) syncPersistedCodexReplicaTopology(ctx context.Context, auth *coreauth.Auth) (bool, error) {
+	if s == nil || s.coreManager == nil || auth == nil {
+		return false, nil
+	}
+	_, _, _, _, runtimeReplica := coreauth.CodexReplicaRuntimeInfo(auth)
+	_, configured := auth.Metadata[coreauth.CodexReplicaMetadataKey]
+	if !runtimeReplica && !configured {
+		return false, nil
+	}
+	source, codex := coreauth.NewCodexReplicaSource(auth)
+	if !codex {
+		return false, nil
+	}
+	desired, errExpand := coreauth.ExpandCodexReplicas(source)
+	if errExpand != nil {
+		return true, errExpand
+	}
+
+	currentByID := make(map[string]*coreauth.Auth)
+	for _, current := range s.coreManager.List() {
+		if current == nil {
+			continue
+		}
+		group, _, _, _, grouped := coreauth.CodexReplicaRuntimeInfo(current)
+		if current.ID == source.ID || (grouped && group == source.ID) {
+			currentByID[current.ID] = current
+		}
+	}
+	desiredIDs := make(map[string]struct{}, len(desired))
+	updates := make([]watcher.AuthUpdate, 0, len(desired)+len(currentByID))
+	for _, candidate := range desired {
+		if candidate == nil || strings.TrimSpace(candidate.ID) == "" {
+			continue
+		}
+		desiredIDs[candidate.ID] = struct{}{}
+		action := watcher.AuthUpdateActionAdd
+		if existing := currentByID[candidate.ID]; existing != nil {
+			candidate = mergeCodexReplicaRuntimeState(existing, candidate)
+			action = watcher.AuthUpdateActionModify
+		}
+		updates = append(updates, watcher.AuthUpdate{Action: action, ID: candidate.ID, Auth: candidate})
+	}
+	for authID, current := range currentByID {
+		if _, keep := desiredIDs[authID]; keep {
+			continue
+		}
+		updates = append(updates, watcher.AuthUpdate{Action: watcher.AuthUpdateActionDelete, ID: authID, Auth: current})
+	}
+	s.handleAuthUpdates(coreauth.WithSkipPersist(ctx), updates)
+	return true, nil
+}
+
+func mergeCodexReplicaRuntimeState(existing, desired *coreauth.Auth) *coreauth.Auth {
+	if existing == nil {
+		return desired
+	}
+	if desired == nil {
+		return existing.Clone()
+	}
+	next := existing.Clone()
+	configuration := desired.Clone()
+	next.Index = configuration.Index
+	next.FileName = configuration.FileName
+	next.Provider = configuration.Provider
+	next.Label = configuration.Label
+	next.Prefix = configuration.Prefix
+	next.ProxyURL = configuration.ProxyURL
+	next.Attributes = configuration.Attributes
+	next.Metadata = configuration.Metadata
+	next.Storage = configuration.Storage
+	next.Disabled = configuration.Disabled
+	next.UpdatedAt = configuration.UpdatedAt
+	next.LastRefreshedAt = configuration.LastRefreshedAt
+	next.NextRefreshAfter = configuration.NextRefreshAfter
+	if next.Disabled {
+		next.Status = coreauth.StatusDisabled
+		next.StatusMessage = configuration.StatusMessage
+	} else if existing.Disabled || existing.Status == coreauth.StatusDisabled {
+		next.Status = coreauth.StatusActive
+		next.StatusMessage = ""
+	}
+	return next
+}
+
 func (s *Service) ensureWebsocketGateway() {
 	if s == nil {
 		return

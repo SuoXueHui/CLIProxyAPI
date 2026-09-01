@@ -204,6 +204,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.registerModelRefreshCallback()
+	if !homeEnabled {
+		s.registerLoadedAuthModels(ctx)
+	}
 
 	// Prefer core auth manager auto refresh if available.
 	if s.coreManager != nil && !homeEnabled && s.lifecycleActive() {

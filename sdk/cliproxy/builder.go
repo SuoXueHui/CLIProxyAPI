@@ -343,6 +343,9 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 		if s == nil || auth == nil || auth.ID == "" {
 			return nil
 		}
+		if managed, errTopology := s.syncPersistedCodexReplicaTopology(ctx, auth); managed || errTopology != nil {
+			return errTopology
+		}
 		action := watcher.AuthUpdateActionAdd
 		if s.coreManager != nil {
 			if _, ok := s.coreManager.GetByID(auth.ID); ok {

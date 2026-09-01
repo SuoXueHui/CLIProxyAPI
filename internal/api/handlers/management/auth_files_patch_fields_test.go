@@ -237,8 +237,13 @@ func TestPatchAuthFileFields_ArbitraryFieldsPersistToFile(t *testing.T) {
 	}
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	postPersistCalls := 0
+	h.SetPostAuthPersistHook(func(context.Context, *coreauth.Auth) error {
+		postPersistCalls++
+		return nil
+	})
 
-	body := `{"name":"generic.json","abc":true,"nested.cde":true,"fgh":{"ijk":true}}`
+	body := `{"name":"generic.json","abc":true,"nested.cde":true,"fgh":{"ijk":true},"codex_replica":{"enabled":true,"count":6,"concurrency":10}}`
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
@@ -248,6 +253,9 @@ func TestPatchAuthFileFields_ArbitraryFieldsPersistToFile(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if postPersistCalls != 1 {
+		t.Fatalf("post-persist calls = %d, want 1 for replica topology update", postPersistCalls)
 	}
 
 	raw, errRead := os.ReadFile(filePath)
@@ -274,6 +282,41 @@ func TestPatchAuthFileFields_ArbitraryFieldsPersistToFile(t *testing.T) {
 	}
 	if got := fgh["ijk"]; got != true {
 		t.Fatalf("fgh.ijk = %#v, want true", got)
+	}
+	replica, ok := data[coreauth.CodexReplicaMetadataKey].(map[string]any)
+	if !ok || replica["enabled"] != true || replica["count"] != float64(6) || replica["concurrency"] != float64(10) {
+		t.Fatalf("codex_replica = %#v, want enabled 6 by 10", data[coreauth.CodexReplicaMetadataKey])
+	}
+}
+
+func TestPatchAuthFileFields_RejectsInvalidCodexReplicaConfiguration(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"codex.json","codex_replica":true}`,
+		`{"name":"codex.json","codex_replica":{"enabled":true,"count":0,"concurrency":10}}`,
+		`{"name":"codex.json","codex_replica":{"enabled":true,"count":6,"concurrency":1001}}`,
+	} {
+		manager := coreauth.NewManager(nil, nil, nil)
+		if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+			ID:       "codex.json",
+			FileName: "codex.json",
+			Provider: "codex",
+			Metadata: map[string]any{"type": "codex"},
+		}); errRegister != nil {
+			t.Fatalf("register auth: %v", errRegister)
+		}
+		h := NewHandlerWithoutConfigFilePath(&config.Config{}, manager)
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
+		h.PatchAuthFileFields(ctx)
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400; response=%s", body, recorder.Code, recorder.Body.String())
+		}
+		stored, _ := manager.GetByID("codex.json")
+		if _, exists := stored.Metadata[coreauth.CodexReplicaMetadataKey]; exists {
+			t.Fatalf("invalid body %s mutated stored auth: %#v", body, stored.Metadata)
+		}
 	}
 }
 

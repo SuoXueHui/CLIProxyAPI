@@ -256,6 +256,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				adaptiveLease.release(0, durationStream, false)
 				adaptiveLease = nil
 			}
+			if IsCodexReplicaConcurrencyError(errStream) {
+				return nil, errStream
+			}
 			if errCtx := ctx.Err(); errCtx != nil {
 				return nil, errCtx
 			}

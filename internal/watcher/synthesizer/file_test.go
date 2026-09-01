@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -276,6 +277,48 @@ func TestSynthesizeAuthFileExpandsPluginMultiAuths(t *testing.T) {
 	}
 }
 
+func TestSynthesizeAuthFileExpandsEnabledCodexReplicaThroughPluginParser(t *testing.T) {
+	tempDir := t.TempDir()
+	fullPath := filepath.Join(tempDir, "codex.json")
+	raw := []byte(`{"type":"codex","access_token":"token","codex_replica":{"enabled":true,"count":6,"concurrency":10}}`)
+	ctx := &SynthesisContext{
+		Config:  &config.Config{},
+		AuthDir: tempDir,
+		Now:     time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		PluginAuthParser: multiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error) {
+			return []*coreauth.Auth{{
+				ID:       "plugin-codex",
+				FileName: "codex.json",
+				Provider: "codex",
+				Metadata: map[string]any{"type": "codex", "access_token": "token"},
+				Attributes: map[string]string{
+					coreauth.AttributeAuthKind: coreauth.AuthKindOAuth,
+				},
+			}}, true, nil
+		}),
+	}
+
+	auths, errSynthesize := SynthesizeAuthFile(ctx, fullPath, raw)
+	if errSynthesize != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
+	}
+	if len(auths) != 6 {
+		t.Fatalf("SynthesizeAuthFile() len = %d, want six replicas", len(auths))
+	}
+	sharedIndex := auths[0].EnsureIndex()
+	for index, auth := range auths {
+		if auth.ID != "plugin-codex::replica:"+strconv.Itoa(index+1) {
+			t.Fatalf("replica %d ID = %q", index+1, auth.ID)
+		}
+		if auth.EnsureIndex() != sharedIndex || auth.FileName != "codex.json" {
+			t.Fatalf("replica %d identity = index %q file %q", index+1, auth.EnsureIndex(), auth.FileName)
+		}
+		if auth.Attributes[coreauth.AttributeCodexReplicaConcurrency] != "10" || auth.Attributes[coreauth.AttributePath] != fullPath {
+			t.Fatalf("replica %d attributes = %#v", index+1, auth.Attributes)
+		}
+	}
+}
+
 func TestSynthesizeAuthFileSkipsInvalidPluginAuthWeight(t *testing.T) {
 	tempDir := t.TempDir()
 	fullPath := filepath.Join(tempDir, "plugin.json")
@@ -505,6 +548,74 @@ func TestFileSynthesizer_Synthesize_PrefixValidation(t *testing.T) {
 				t.Errorf("expected prefix %q, got %q", tt.wantPrefix, auths[0].Prefix)
 			}
 		})
+	}
+}
+
+func TestSynthesizeAuthFileExpandsEnabledCodexReplicaGroup(t *testing.T) {
+	tempDir := t.TempDir()
+	fullPath := filepath.Join(tempDir, "codex-replica.json")
+	raw := []byte(`{
+		"type":"codex",
+		"access_token":"test-access-token",
+		"codex_replica":{"enabled":true,"count":6,"concurrency":10}
+	}`)
+	if errWrite := os.WriteFile(fullPath, raw, 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	auths, errSynthesize := SynthesizeAuthFile(&SynthesisContext{
+		Config:  &config.Config{},
+		AuthDir: tempDir,
+		Now:     time.Now(),
+	}, fullPath, raw)
+	if errSynthesize != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
+	}
+	if len(auths) != 6 {
+		t.Fatalf("SynthesizeAuthFile() len = %d, want 6", len(auths))
+	}
+
+	ids := make(map[string]struct{}, len(auths))
+	indexes := make(map[string]struct{}, len(auths))
+	for index, auth := range auths {
+		if auth == nil {
+			t.Fatalf("auth %d is nil", index)
+		}
+		if _, duplicate := ids[auth.ID]; duplicate {
+			t.Fatalf("duplicate replica auth ID %q", auth.ID)
+		}
+		ids[auth.ID] = struct{}{}
+		indexes[auth.EnsureIndex()] = struct{}{}
+		if auth.FileName != "codex-replica.json" {
+			t.Fatalf("replica %d FileName = %q, want physical file name", index, auth.FileName)
+		}
+		if got := auth.Attributes["codex_replica_index"]; got != strconv.Itoa(index+1) {
+			t.Fatalf("replica %d index attribute = %q", index, got)
+		}
+	}
+	if len(indexes) != 1 {
+		t.Fatalf("replica auth indexes = %v, want one shared physical identity", indexes)
+	}
+}
+
+func TestSynthesizeAuthFileKeepsCodexReplicaModeDisabledByDefault(t *testing.T) {
+	tempDir := t.TempDir()
+	fullPath := filepath.Join(tempDir, "codex-default.json")
+	raw := []byte(`{"type":"codex","access_token":"test-access-token"}`)
+	if errWrite := os.WriteFile(fullPath, raw, 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	auths, errSynthesize := SynthesizeAuthFile(&SynthesisContext{
+		Config:  &config.Config{},
+		AuthDir: tempDir,
+		Now:     time.Now(),
+	}, fullPath, raw)
+	if errSynthesize != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
+	}
+	if len(auths) != 1 || auths[0].ID != "codex-default.json" {
+		t.Fatalf("default Codex auths = %#v, want one unchanged auth", auths)
 	}
 }
 

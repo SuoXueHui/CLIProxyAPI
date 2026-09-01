@@ -144,20 +144,88 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.EnsureIndex()
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
+	replicaUpdates := m.synchronizeCodexReplicaGroupLocked(authClone)
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone)
+		for _, replica := range replicaUpdates {
+			m.scheduler.upsertAuth(replica)
+		}
 	}
 	m.queueRefreshReschedule(auth.ID)
+	for _, replica := range replicaUpdates {
+		m.queueRefreshReschedule(replica.ID)
+	}
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(ctx)
 	}
 	return auth.Clone(), nil
+}
+
+// synchronizeCodexReplicaGroupLocked broadcasts mutable credential material while
+// preserving each replica's runtime identity, egress address, counters, and cooldown.
+// Callers must hold m.mu.
+func (m *Manager) synchronizeCodexReplicaGroupLocked(source *Auth) []*Auth {
+	group, _, _, _, grouped := CodexReplicaRuntimeInfo(source)
+	if m == nil || source == nil || !grouped {
+		return nil
+	}
+	updates := make([]*Auth, 0)
+	for authID, current := range m.auths {
+		if current == nil || authID == source.ID {
+			continue
+		}
+		currentGroup, _, _, _, sameGroup := CodexReplicaRuntimeInfo(current)
+		if !sameGroup || currentGroup != group {
+			continue
+		}
+		next := current.Clone()
+		wasDisabled := next.Disabled || next.Status == StatusDisabled
+		credentialSnapshot := source.Clone()
+		next.Metadata = credentialSnapshot.Metadata
+		next.Storage = source.Storage
+		next.Prefix = source.Prefix
+		next.ProxyURL = source.ProxyURL
+		next.Label = source.Label
+		next.Disabled = source.Disabled
+		next.LastRefreshedAt = source.LastRefreshedAt
+		next.NextRefreshAfter = source.NextRefreshAfter
+		next.UpdatedAt = source.UpdatedAt
+		if next.Disabled {
+			next.Status = StatusDisabled
+			next.StatusMessage = source.StatusMessage
+		} else if wasDisabled {
+			next.Status = source.Status
+			next.StatusMessage = source.StatusMessage
+		}
+		for key := range next.Attributes {
+			if !isCodexReplicaRuntimeAttribute(key) {
+				delete(next.Attributes, key)
+			}
+		}
+		for key, value := range source.Attributes {
+			if !isCodexReplicaRuntimeAttribute(key) {
+				next.Attributes[key] = value
+			}
+		}
+		m.auths[authID] = next
+		updates = append(updates, next.Clone())
+	}
+	return updates
+}
+
+func isCodexReplicaRuntimeAttribute(key string) bool {
+	switch key {
+	case AttributeCodexReplicaGroup, AttributeCodexReplicaIndex, AttributeCodexReplicaCount, AttributeCodexReplicaConcurrency:
+		return true
+	default:
+		return false
+	}
 }
 
 // Remove deletes an auth from runtime state without persisting.
@@ -202,6 +270,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	}
 	m.queueRefreshUnschedule(id)
 	m.invalidateSessionAffinity(id)
+	ForgetCodexReplicaConcurrency(id)
 
 	if provider != "" {
 		if exec, ok := m.Executor(provider); ok && exec != nil {

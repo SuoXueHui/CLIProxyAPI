@@ -1,0 +1,24 @@
+# 进度记录
+
+- 2026-09-01：完成仓库、现有 planning 证据和 AGENTS.md 检查。
+- 2026-09-01：完成线上只读刷新，确认目标主机、容器状态、auth 数量、IPv6 前缀、现行并发/路由配置。
+- 2026-09-01：完成 Manager Account Concurrency、CPA IPv6 allocator/controller、Codex account-device identity 和 session-affinity 代码核对。
+- 2026-09-01：用户确认继续，并要求 CPAMP 支持按账号启用分身、配置分身数与并发，列表保持一个账号并聚合用量。
+- 2026-09-01：确定不复制 OAuth 文件，改为一个物理 auth 在 CPA 内展开多个运行时分身；分身共享 `auth_index`，独立 auth ID/IPv6/设备身份。
+- 2026-09-01：已定位 CPAMP 实际生产源码 `/Users/suo/work/project/CPA-Manager-Plus-ipv6-detail-prod`，准备先写失败测试再实施。
+- 2026-09-01：完成 CPA 物理账号到运行时分身的展开、独立并发槽、满载绕行、流式生命周期、刷新串行和管理聚合投影。
+- 2026-09-01：补齐生产插件解析路径，确认 6 个分身拥有唯一运行时 ID，并继承共享文件名和 `auth_index`。
+- 2026-09-01：完成 CPAMP 配置表单、校验、源文件 PATCH、列表分身容量/活跃并发展示和四种语言文案。
+- 2026-09-01：定向验证已通过：核心展开/并发/管理/流式测试，以及 CPAMP 4 个测试文件共 186 条测试；开始全量测试与构建。
+- 2026-09-01：CPAMP type-check、lint（0 error，1 条既有 warning）、217 个测试文件/2693 条测试、生产构建和 Manager Server 全量 Go 测试通过。
+- 2026-09-01：核心受影响包、race 与服务端构建通过；全仓测试仅保留未改动 WebRTC DataChannel 环境失败和既有 planning artifacts 触发的 no-copy invariant。
+- 2026-09-01：候选发现并修复首次模型绑定时序、分身禁用后重启状态、动态拓扑即时生效三个边界；重新构建最终 Core 候选并复验。
+- 2026-09-01：完成 6/10/20 并发测试；20 并发上游 429 达 20%，按门禁停止 40/60，决定不切换生产。
+- 2026-09-01：完成 CPAMP `6×10 -> 2×3 -> 6×10` 动态配置验证、原始 auth SHA 验证和知识文档同步，进入候选凭据清理与最终状态复核。
+- 2026-09-01：候选容器及派生 auth/config/key/SQLite/logs 已按 dry-run 清理；保留无凭据镜像、构建日志和摘要。生产 Core/Manager 未切换，最终 running、restart=0、OOM=false、HTTP 200。
+- 2026-09-01：用户授权合并 `master` 并发布；检测到另一任务正在发布 zero-impact release control，已发出串行交接请求，在其线上所有权与 Compose 收口前不切换本功能。
+- 2026-09-01：当前 Core 基线已前进到 `08395a06`，线上暂运行 `cli-proxy-api-stability-08395a06`；开始复核分身逻辑与新生命周期控制的交叉影响。
+- 2026-09-01：完成交叉基线回归：Core 受影响包、分身专属 race、gofmt、服务端构建通过；在排除历史 planning 污染的临时快照中 `go test ./... -count=1` 全量通过。
+- 2026-09-01：Manager type-check、lint（0 error、1 条既有 Fast Refresh warning）、217 个测试文件/2693 条测试、Manager Server 全量测试与生产构建通过。
+- 2026-09-01：只读确认 zero-impact 基线已运行于 Compose 管理的 `cli-proxy-api-stability-08395a06`，Router 是共享网络唯一 `cli-proxy-api` 别名拥有者，公网/直连 200、restart=0、OOM=false；继续等待其 15 分钟观察与分支冻结完成。
+- 2026-09-01：zero-impact 基线完成 15/15 分钟采样，全部公网/直连 200、active/healthy、restart=0、OOM=false，usage/outbox 持续增长；期间无新 Git/构建/SSH 进程和新提交，据此冻结 `08395a06` 作为本次发布父提交。
