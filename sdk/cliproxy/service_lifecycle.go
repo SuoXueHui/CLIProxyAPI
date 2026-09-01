@@ -204,6 +204,7 @@ func (s *Service) Run(ctx context.Context) error {
 	// Prefer core auth manager auto refresh if available.
 	if s.coreManager != nil && !homeEnabled && s.lifecycleActive() {
 		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
+		s.setLifecycleComponents(true)
 		log.Infof("core auth auto-refresh started (interval=%s)", lifecycleAutoRefreshInterval)
 	}
 

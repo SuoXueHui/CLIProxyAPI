@@ -46,6 +46,18 @@ func managementReadPath(method, path string) bool {
 	if method != http.MethodGet && method != http.MethodHead {
 		return false
 	}
+	// These GET routes create or cancel OAuth sessions and therefore remain
+	// mutation-like even though their HTTP verb is GET.
+	switch path {
+	case "/v0/management/anthropic-auth-url",
+		"/v0/management/codex-auth-url",
+		"/v0/management/antigravity-auth-url",
+		"/v0/management/kimi-auth-url",
+		"/v0/management/xai-auth-url",
+		"/v0/management/oauth-callback",
+		"/v0/management/oauth-session":
+		return false
+	}
 	switch path {
 	case "/v0/management/config",
 		"/v0/management/config.yaml",
@@ -57,7 +69,7 @@ func managementReadPath(method, path string) bool {
 		"/v0/management/codex-weekly-overdraft":
 		return true
 	default:
-		return strings.HasPrefix(path, "/v0/management/plugins/") && strings.HasSuffix(path, "/config")
+		return strings.HasPrefix(path, "/v0/management") || strings.HasPrefix(path, "/v0/resource/plugins/")
 	}
 }
 

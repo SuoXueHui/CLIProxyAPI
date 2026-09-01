@@ -136,7 +136,24 @@ func (s *Service) resumeLifecycleActive(ctx context.Context) error {
 	if s.coreManager != nil {
 		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
 	}
+	s.setLifecycleComponents(true)
 	return nil
+}
+
+func (s *Service) setLifecycleComponents(autoRefresh bool) {
+	if s == nil || s.lifecycleController == nil {
+		return
+	}
+	s.cfgMu.RLock()
+	ipv6Enabled := s.cfg != nil && s.cfg.IPv6Egress.Enabled
+	pluginRuntime := s.cfg != nil && s.cfg.Plugins.Enabled
+	s.cfgMu.RUnlock()
+	s.lifecycleController.SetComponents(lifecycle.Components{
+		WriterLeaseHeld: s.writerLease != nil,
+		AutoRefresh:     autoRefresh,
+		IPv6Enabled:     ipv6Enabled,
+		PluginRuntime:   pluginRuntime,
+	})
 }
 
 func (s *Service) deactivateLifecycle(ctx context.Context) error {
