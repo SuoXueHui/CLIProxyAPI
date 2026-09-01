@@ -128,3 +128,27 @@ func TestClaudeExecutorSharedCredentialMetadataMixedAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestClaudeSetupTokenMetadataReadsUseSharedLock(t *testing.T) {
+	auth := newSharedClaudeOAuthAuth("claude-race-setup-token")
+	claudeauth.StoreMetadataValue(&auth.Metadata, "skip_account_profile", false)
+	claudeauth.StoreMetadataValue(&auth.Metadata, "is_setup_token", false)
+	claudeauth.StoreMetadataValue(&auth.Metadata, "setup_token", true)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				claudeauth.StoreMetadataValue(&auth.Metadata, "setup_token", i%4 == 0)
+				return
+			}
+			_ = isClaudeSetupToken(auth, "sk-ant-oat-race-probe")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+}
