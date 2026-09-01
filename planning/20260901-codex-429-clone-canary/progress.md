@@ -45,3 +45,7 @@
 - 2026-09-02：按新界面要求隐藏账号身份区的 `分身 N × C` 标签；Core 管理投影增加按运行时分身返回的 `index/active/limit/egress_assigned` 明细，原聚合字段继续保留。
 - 2026-09-02：Manager 将逐分身并发显示为两列紧凑网格，默认 6 个分身为三行；2 秒局部轮询可识别“聚合 active 不变、分身间负载迁移”的变化，旧 Core 无明细时继续显示聚合并发。
 - 2026-09-02：Core 受影响包、服务端构建及排除未跟踪历史 planning artifacts 的干净快照全仓测试通过；Manager 217 个测试文件/2699 条测试、type-check、生产构建、lint（0 error、1 条既有 warning）和 Manager Server 全量测试通过。
+- 2026-09-02：远端 Linux amd64 构建 Core `cli-proxy-api:v7.2.147-replica-detail-66e53051-amd64` 与 Manager `cpa-manager-plus:v1.12.6-replica-detail-ef5ccb9e-amd64`；本机 Docker daemon 不可用，未使用未经验证的本机构建镜像。
+- 2026-09-02：单候选发布完成：旧 Core 代理流量迁移、usage 排空、长连接定点关闭后停止；候选激活 writer/refresh/plugin/IPv6，Manager canonical Compose 原位重建，未启动 buffer。
+- 2026-09-02：线上验收完成：Core/Manager/Router healthy，restart=0，OOM=false，公网/直连/Manager health 200；49 auth、22 分身账号、132 分身、160 IPv6，usage pending/inflight=0，160 个 TCP IPv6 namespace 探针通过且外部源地址回显一致。
+- 2026-09-02：浏览器验收确认 132 个明细格、22 组、0 个旧规格标签，4 秒内 17 个格更新；无账号配置写入。

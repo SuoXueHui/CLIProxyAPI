@@ -97,3 +97,5 @@
 - `replica_count`、`replica_concurrency`、`replica_active`、`replica_total_capacity` 等旧字段保持不变，Manager 在 Core 滚动切换期间可回退到旧聚合显示。
 - Manager 身份区不再显示 `分身 N × C` 标签；可用状态区最多显示前 6 个分身的紧凑明细，超过 6 个时显示剩余数量，完整值保留在悬浮提示中。
 - 局部轮询的相等判断必须包含逐分身数组，不能只比较聚合 active；否则请求在不同分身间迁移但总量不变时，React 状态会错误复用旧快照。
+- 线上自动化 DOM 的 `textContent` 会把分身序号 `1` 与值 `0/10` 拼成 `10/10`，不能据此判断 active 超限；应读取 `data-account-replica-index`、`data-account-replica-active`、`data-account-replica-limit` 或使用可访问 title。实际 132 格均满足 active <= limit。
+- 当前 canonical Core Compose `/data/apps/cli-proxy-api/docker-compose.prod.yml` 已收口到 `replica-detail-66e53051` 镜像和独立候选目录；旧 Compose 与 Manager before 文件保留在对应 release 目录用于回滚，未删除稳定 auth/plugin/data。
