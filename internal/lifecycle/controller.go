@@ -16,6 +16,7 @@ const (
 	ModeActive          Mode = "active"
 	ModeStandby         Mode = "standby"
 	ModeServingReadOnly Mode = "serving-readonly"
+	ModeQuiescing       Mode = "quiescing"
 	ModeDraining        Mode = "draining"
 )
 
@@ -111,7 +112,7 @@ func ParseMode(raw string) (Mode, error) {
 
 func (m Mode) Valid() bool {
 	switch m {
-	case ModeActive, ModeStandby, ModeServingReadOnly, ModeDraining:
+	case ModeActive, ModeStandby, ModeServingReadOnly, ModeQuiescing, ModeDraining:
 		return true
 	default:
 		return false
@@ -168,6 +169,40 @@ func (c *Controller) AdmitProxy() (func(), bool) {
 	}
 	c.active++
 	c.mu.Unlock()
+	return c.releaseProxyReservation(), true
+}
+
+// AdmitProxyWait reserves a request or waits while an explicit release
+// quiesce is in progress. Other non-serving modes continue to fail closed.
+func (c *Controller) AdmitProxyWait(ctx context.Context) (func(), bool) {
+	if c == nil {
+		return func() {}, true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		c.mu.Lock()
+		if c.admissionOpen {
+			c.active++
+			c.mu.Unlock()
+			return c.releaseProxyReservation(), true
+		}
+		if c.mode != ModeQuiescing {
+			c.mu.Unlock()
+			return nil, false
+		}
+		changed := c.changed
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-changed:
+		}
+	}
+}
+
+func (c *Controller) releaseProxyReservation() func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -178,7 +213,7 @@ func (c *Controller) AdmitProxy() (func(), bool) {
 			c.signalLocked()
 			c.mu.Unlock()
 		})
-	}, true
+	}
 }
 
 func (c *Controller) signalLocked() {
@@ -254,6 +289,37 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 		c.mu.Unlock()
 		return status, ErrActiveRequests
 	}
+	if current == ModeQuiescing && (target == ModeActive || target == ModeStandby) && c.active > 0 {
+		status := c.statusLocked()
+		c.mu.Unlock()
+		return status, ErrActiveRequests
+	}
+	if current == ModeServingReadOnly && target == ModeQuiescing {
+		c.mode = target
+		c.admissionOpen = false
+		c.generation++
+		c.signalLocked()
+		status := c.statusLocked()
+		c.mu.Unlock()
+		return status, nil
+	}
+	if current == ModeQuiescing && target == ModeServingReadOnly {
+		c.mode = target
+		c.admissionOpen = true
+		c.generation++
+		c.signalLocked()
+		status := c.statusLocked()
+		c.mu.Unlock()
+		return status, nil
+	}
+	if current == ModeQuiescing && target == ModeStandby {
+		c.mode = target
+		c.generation++
+		c.signalLocked()
+		status := c.statusLocked()
+		c.mu.Unlock()
+		return status, nil
+	}
 	if current == ModeServingReadOnly && target == ModeStandby {
 		c.mode = target
 		c.generation++
@@ -283,7 +349,7 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 		if hooks.PrepareReadOnly != nil {
 			errHook = hooks.PrepareReadOnly(ctx)
 		}
-	case current == ModeServingReadOnly && target == ModeActive:
+	case (current == ModeServingReadOnly || current == ModeQuiescing) && target == ModeActive:
 		if hooks.Activate != nil {
 			components, errHook = hooks.Activate(ctx)
 		}
@@ -301,8 +367,8 @@ func (c *Controller) Transition(ctx context.Context, target Mode, expectedGenera
 		c.components = components
 		if current == ModeServingReadOnly {
 			c.admissionOpen = true
-			c.signalLocked()
 		}
+		c.signalLocked()
 		status := c.statusLocked()
 		c.mu.Unlock()
 		return status, errHook
@@ -332,7 +398,9 @@ func validTransition(current, target Mode) bool {
 	case ModeStandby:
 		return target == ModeServingReadOnly
 	case ModeServingReadOnly:
-		return target == ModeStandby || target == ModeActive
+		return target == ModeStandby || target == ModeActive || target == ModeQuiescing
+	case ModeQuiescing:
+		return target == ModeServingReadOnly || target == ModeStandby || target == ModeActive
 	case ModeActive:
 		return target == ModeDraining
 	case ModeDraining:

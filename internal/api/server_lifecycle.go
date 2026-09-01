@@ -32,7 +32,7 @@ func (s *Server) lifecycleMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		done, admitted := s.lifecycleController.AdmitProxy()
+		done, admitted := s.lifecycleController.AdmitProxyWait(c.Request.Context())
 		if !admitted {
 			c.Header("Retry-After", "1")
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "lifecycle_not_accepting", "mode": s.lifecycleController.Status().Mode})

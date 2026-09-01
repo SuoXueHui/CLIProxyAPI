@@ -137,6 +137,13 @@ func TestBuilderActiveRequiresExclusiveWriterLease(t *testing.T) {
 	}
 }
 
+func TestBuilderRejectsQuiescingAsInitialMode(t *testing.T) {
+	t.Setenv("CLIPROXY_LIFECYCLE_MODE", string(lifecycle.ModeQuiescing))
+	if _, errBuild := lifecycleTestBuilder(t).Build(); errBuild == nil {
+		t.Fatal("Build() accepted quiescing as an initial lifecycle mode")
+	}
+}
+
 func TestLifecyclePluginRuntimeRejectsMissingRequiredPlugin(t *testing.T) {
 	enabled := true
 	service := &Service{

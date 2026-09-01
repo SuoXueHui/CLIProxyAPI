@@ -192,6 +192,59 @@ func TestControllerServingReadOnlyDrainsBeforeActivation(t *testing.T) {
 	}
 }
 
+func TestControllerQuiescingQueuesProxyUntilActivation(t *testing.T) {
+	controller := NewController(ModeServingReadOnly)
+	controller.SetHooks(Hooks{Activate: func(context.Context) (Components, error) {
+		return Components{CredentialWriter: true, WriterLeaseHeld: true}, nil
+	}})
+	status, errQuiesce := controller.Transition(context.Background(), ModeQuiescing, 0)
+	if errQuiesce != nil || status.Mode != ModeQuiescing || status.AcceptingNew {
+		t.Fatalf("serving-readonly -> quiescing = %+v, %v", status, errQuiesce)
+	}
+
+	type admission struct {
+		done     func()
+		admitted bool
+	}
+	admittedCh := make(chan admission, 1)
+	go func() {
+		done, admitted := controller.AdmitProxyWait(context.Background())
+		admittedCh <- admission{done: done, admitted: admitted}
+	}()
+	select {
+	case result := <-admittedCh:
+		if result.done != nil {
+			result.done()
+		}
+		t.Fatal("quiescing proxy did not wait")
+	case <-time.After(20 * time.Millisecond):
+	}
+	status, errActivate := controller.Transition(context.Background(), ModeActive, 0)
+	if errActivate != nil || status.Mode != ModeActive || !status.AcceptingNew {
+		t.Fatalf("quiescing -> active = %+v, %v", status, errActivate)
+	}
+	select {
+	case result := <-admittedCh:
+		if !result.admitted || result.done == nil {
+			t.Fatal("queued proxy was not admitted after activation")
+		}
+		result.done()
+	case <-time.After(time.Second):
+		t.Fatal("queued proxy did not resume after activation")
+	}
+}
+
+func TestControllerQuiescingCanReturnToReadOnly(t *testing.T) {
+	controller := NewController(ModeServingReadOnly)
+	if _, errQuiesce := controller.Transition(context.Background(), ModeQuiescing, 0); errQuiesce != nil {
+		t.Fatal(errQuiesce)
+	}
+	status, errRollback := controller.Transition(context.Background(), ModeServingReadOnly, 0)
+	if errRollback != nil || status.Mode != ModeServingReadOnly || !status.AcceptingNew {
+		t.Fatalf("quiescing -> serving-readonly = %+v, %v", status, errRollback)
+	}
+}
+
 func TestControllerTransitionLockHonorsContext(t *testing.T) {
 	controller := NewController(ModeStandby)
 	prepareStarted := make(chan struct{})
@@ -274,7 +327,7 @@ func TestControllerPublishesActualComponentsAfterResumeFailure(t *testing.T) {
 func TestParseMode(t *testing.T) {
 	for input, want := range map[string]Mode{
 		"": ModeActive, "active": ModeActive, "standby": ModeStandby,
-		"serving-readonly": ModeServingReadOnly, "draining": ModeDraining,
+		"serving-readonly": ModeServingReadOnly, "quiescing": ModeQuiescing, "draining": ModeDraining,
 	} {
 		got, errParse := ParseMode(input)
 		if errParse != nil || got != want {

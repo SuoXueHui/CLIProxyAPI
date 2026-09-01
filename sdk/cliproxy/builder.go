@@ -316,8 +316,8 @@ func buildLifecycleController(cfg *config.Config) (*lifecycle.Controller, *lifec
 	if errMode != nil {
 		return nil, nil, "", fmt.Errorf("cliproxy: %w", errMode)
 	}
-	if mode == lifecycle.ModeDraining {
-		return nil, nil, "", fmt.Errorf("cliproxy: draining cannot be used as an initial lifecycle mode")
+	if mode == lifecycle.ModeDraining || mode == lifecycle.ModeQuiescing {
+		return nil, nil, "", fmt.Errorf("cliproxy: %s cannot be used as an initial lifecycle mode", mode)
 	}
 	lockPath := strings.TrimSpace(os.Getenv("CLIPROXY_WRITER_LOCK_PATH"))
 	if lockPath == "" {
