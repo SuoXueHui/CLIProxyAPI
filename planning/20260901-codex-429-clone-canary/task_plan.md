@@ -25,10 +25,10 @@
 - [completed] 8. 对比 429、成功率、延迟、实际 auth/IP 分布和运行时投影
 - [completed] 9. 根据结果决定不切换生产，保留无凭据构建证据并清理候选凭据
 - [completed] 10. 等待现有 zero-impact release 完成，冻结新的生产与 `master` 基线
-- [in_progress] 11. 基于冻结基线复核交叉改动、执行全量回归并提交 Core/Manager
-- [pending] 12. 推送两个仓库 `master`，构建带明确 commit 的正式候选镜像
-- [pending] 13. 串行发布 Core 后发布 Manager；Core 使用 quiesce/ownership transfer，Manager 不参与 API 流量切换
-- [pending] 14. 完成生产验收、观察窗口、回滚材料与知识文档收口
+- [completed] 11. 基于冻结基线复核交叉改动、执行全量回归并提交 Core/Manager
+- [completed] 12. 推送两个仓库 `master`，构建带明确 commit 的正式候选镜像
+- [completed] 13. 执行生产候选切换与回滚验证；旧 Core 恢复 active，Router 恢复旧 upstream
+- [in_progress] 14. 完成失败门禁记录、候选回收确认与单候选重试方案收口
 
 ## 安全边界
 
@@ -40,3 +40,5 @@
 - 任何 429 比例上升、401/402、bind/route 错误、容器重启/OOM 或候选无法隔离时立即停止。
 - 不与正在进行的发布并行切换线上容器；必须等当前任务明确完成 ownership transfer、Compose 和网络别名收口后再进入本功能发布。
 - 正式发布只提交本任务文件，排除其他未跟踪 planning 目录；推送前再次确认远端 `master` 未产生新提交。
+- 主机内存不可扩容时，禁止同时运行多个完整 CPA 候选；重试只允许一个候选，取消 buffer 实例，并在低流量窗口执行。
+- 任何候选切换窗口出现整机 SSH/banner 超时、连续公网空响应、候选 5xx 增长或 usage collector 503，立即恢复旧 active 与 Router 旧 upstream。

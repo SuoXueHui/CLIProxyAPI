@@ -108,3 +108,31 @@ func TestLifecycleMiddlewareTracksServingReadOnlyRequests(t *testing.T) {
 		t.Fatalf("active requests after handler = %d, want 0", got)
 	}
 }
+
+func TestLifecycleMiddlewareAllowsUsageDeliveryInServingReadOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controller := lifecycle.NewController(lifecycle.ModeStandby)
+	server := &Server{lifecycleController: controller}
+	engine := gin.New()
+	engine.Use(server.lifecycleMiddleware())
+	engine.POST("/v0/management/usage-queue/claim", func(c *gin.Context) { c.Status(http.StatusOK) })
+	engine.POST("/v0/management/usage-queue/ack", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	for _, path := range []string{"/v0/management/usage-queue/claim", "/v0/management/usage-queue/ack"} {
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("standby POST %s = %d, want %d", path, recorder.Code, http.StatusServiceUnavailable)
+		}
+	}
+	if _, errTransition := controller.Transition(context.Background(), lifecycle.ModeServingReadOnly, 0); errTransition != nil {
+		t.Fatalf("standby -> serving-readonly = %v", errTransition)
+	}
+	for _, path := range []string{"/v0/management/usage-queue/claim", "/v0/management/usage-queue/ack"} {
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("serving-readonly POST %s = %d, want %d", path, recorder.Code, http.StatusOK)
+		}
+	}
+}

@@ -14,6 +14,16 @@ func (s *Server) lifecycleMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		if managementUsageDeliveryPath(c.Request.Method, c.Request.URL.Path) {
+			mode := s.lifecycleController.Status().Mode
+			if mode != lifecycle.ModeActive && mode != lifecycle.ModeServingReadOnly {
+				c.Header("Retry-After", "1")
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "lifecycle_read_only", "mode": mode})
+				return
+			}
+			c.Next()
+			return
+		}
 		if managementReadPath(c.Request.Method, c.Request.URL.Path) || publicLifecyclePath(c.Request.URL.Path) {
 			c.Next()
 			return
@@ -41,6 +51,15 @@ func (s *Server) lifecycleMiddleware() gin.HandlerFunc {
 		defer done()
 		c.Next()
 	}
+}
+
+// managementUsageDeliveryPath keeps durable usage delivery available while a
+// candidate serves read-only traffic, without opening credential/config writes.
+func managementUsageDeliveryPath(method, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	return path == "/v0/management/usage-queue/claim" || path == "/v0/management/usage-queue/ack"
 }
 
 func lifecycleControlPath(path string) bool {

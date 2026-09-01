@@ -22,3 +22,9 @@
 - 2026-09-01：Manager type-check、lint（0 error、1 条既有 Fast Refresh warning）、217 个测试文件/2693 条测试、Manager Server 全量测试与生产构建通过。
 - 2026-09-01：只读确认 zero-impact 基线已运行于 Compose 管理的 `cli-proxy-api-stability-08395a06`，Router 是共享网络唯一 `cli-proxy-api` 别名拥有者，公网/直连 200、restart=0、OOM=false；继续等待其 15 分钟观察与分支冻结完成。
 - 2026-09-01：zero-impact 基线完成 15/15 分钟采样，全部公网/直连 200、active/healthy、restart=0、OOM=false，usage/outbox 持续增长；期间无新 Git/构建/SSH 进程和新提交，据此冻结 `08395a06` 作为本次发布父提交。
+- 2026-09-01：按白名单提交并 fast-forward 推送两个仓库 `master`：Core `d2658d68`、Manager `20cb2f80`；未纳入其他未跟踪 planning 目录。
+- 2026-09-01：正式镜像构建并完成合成 auth 隔离验收；发现现有 IPv6 bridge MASQUERADE 会把所有账号源地址改写为主机 IPv6，macvlan 直连探针可保留真实分身源地址，正式切换将同步修正生产 egress 网络。
+- 2026-09-01：生产候选已以当前配置在 macvlan `cpa-v6-direct` 上进入 `serving-readonly` 验收，49 个 auth/26 个模型可读，writer/refresh/IPv6/plugin 均关闭；生产旧 Core 仍 active、公网 200。
+- 2026-09-01：首次正式切换按 quiescing 顺序验证并触发回滚：旧 Core 长连接未在 90 秒内清零，新候选出现 503/上游限流，Router 已恢复旧 upstream，旧 Core 恢复 `active`，生产切换未完成。
+- 2026-09-01：为避免双候选资源叠加，启动第二个 buffer 后主机出现 SSH banner/公网间歇性空响应；已执行停止删除候选命令，当前不再继续发布，等待 SSH 可稳定复核回收结果。
+- 2026-09-01：用户确认主机内存无法扩容；重试方案固定为“旧 Core + 单候选”，不运行 buffer，不同时构建/运行多套 CPA，Manager 暂不切换。
