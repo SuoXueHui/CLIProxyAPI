@@ -36,3 +36,6 @@
 - 2026-09-01：将候选纳入 `production-single-compose.yml` 并同步为 canonical `/data/apps/cli-proxy-api/docker-compose.prod.yml`；旧 Core outbox 清零后停止，释放约 4.2 GiB 内存并保留回滚资产。
 - 2026-09-01：Router proxy/management upstream 均切到 `cpa-replica-single`；发布 Manager 镜像 `v1.12.6-codex-replica-20cb2f80-amd64`，Core、Manager、Router 均 healthy、restart=0、OOM=false。
 - 2026-09-01：线上浏览器验证账号列表为 49 个物理凭证、Codex 36 行；配置抽屉分身模式默认关闭，开启未保存时默认 6×10、总容量 60，控制台无错误，已恢复未保存状态并关闭抽屉。
+- 2026-09-01：发现首版 Manager 只具备单账号分身配置，没有账号选择后的批量入口；新增批量“分身设置”按钮、统一启停弹窗、6×10 默认值、范围校验、混选保护和四语言文案。
+- 2026-09-01：批量功能通过账号页 225 条测试、账号工作区定向 261 条测试、全量 217 文件/2694 条测试、type-check、lint 0 error、Manager Server 全量测试和 single-file 生产构建。
+- 2026-09-01：Manager 最终镜像 `v1.12.6-codex-replica-bulk-79e40055-amd64` 已 Compose 发布；线上无写入视觉验收确认按钮、弹窗和 6×10=60 文案，账号 auth 文件未产生 `codex_replica`，Core/Manager/Router healthy。

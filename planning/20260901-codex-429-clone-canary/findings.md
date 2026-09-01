@@ -76,3 +76,10 @@
 - macvlan 容器内有 1 个容器地址和 49 个当前物理 auth 地址；所有地址均为 `nodad` 且无 tentative/dadfailed。选取一个 auth IPv6 做容器 network namespace 出站，外部回显与指定源地址完全一致。
 - 当前生产 auth 默认均未配置 `codex_replica`，因此发布不会自动改变账号拓扑。浏览器实测配置抽屉默认关闭；临时打开未保存时显示分身数 6、单分身并发 10、总容量 60，随后已恢复关闭并退出抽屉。
 - 最终稳定窗口中公网、直连和 Manager health 均为 HTTP 200，Core/Manager/Router restart=0、OOM=false。观察到的一组 16 个 503 来自 `grok-imagine-image` 错误调用 `/v1/chat/completions`，与 Codex 分身发布无关；窗口内没有 Core 429。
+
+## 2026-09-01 批量分身入口补齐
+
+- 首版 Manager 只支持单账号配置抽屉开启分身，账号选择后的批量操作栏没有入口，不满足批量启用工作流。
+- Manager `79e40055` 已在浮动批量操作栏增加“分身设置”；仅当所选项全部为非 runtime-only Codex 物理账号时可用，混选 provider 会禁用，提交复用现有 auth-index/source-file 一致性保护。
+- 批量弹窗支持统一开启或关闭，开启默认 6×10，范围与单账号配置一致：分身 1-64、单分身并发 1-1000，并实时显示总容量。
+- 线上已登录页面完成无写入验收：选择 1 个 Codex 账号后按钮可见，弹窗显示 6×10=60，四语言文案在正确 `accounts` 命名空间；点击取消并清除选择后，49 个 auth 仍为 `replica_present=0`。
