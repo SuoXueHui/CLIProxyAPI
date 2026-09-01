@@ -136,7 +136,8 @@ func (s *Service) resumeLifecycleActive(ctx context.Context) error {
 	if s.coreManager != nil {
 		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
 	}
-	s.setLifecycleComponents(true)
+	// The controller commits the AutoRefresh component after this hook returns.
+	// Updating it here would re-enter the controller lock held by Transition.
 	return nil
 }
 
