@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
+	internalregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -83,6 +84,15 @@ func TestBuilderStandbyLoadsCredentialsBeforeServingReadOnly(t *testing.T) {
 	}
 	if got := len(service.coreManager.List()); got != 1 {
 		t.Fatalf("serving-readonly auth count = %d, want 1", got)
+	}
+	authID := service.coreManager.List()[0].ID
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+	if models := modelRegistry.GetModelsForClient(authID); len(models) == 0 {
+		t.Fatal("serving-readonly did not register models for loaded auth")
+	}
+	if _, ok := service.coreManager.Executor("codex"); !ok {
+		t.Fatal("serving-readonly did not register the loaded auth executor")
 	}
 }
 

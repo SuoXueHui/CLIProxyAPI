@@ -58,6 +58,12 @@ func (s *Service) prepareLifecycleReadOnly(ctx context.Context) error {
 	if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 		return fmt.Errorf("load auth store for read-only serving: %w", errLoad)
 	}
+	auths := s.coreManager.List()
+	s.registerAvailableExecutors(ctx, executorRegistrationOptions{auths: auths})
+	s.registerModelsForAuthBatch(ctx, auths)
+	if errContext := ctx.Err(); errContext != nil {
+		return fmt.Errorf("prepare read-only serving: %w", errContext)
+	}
 	return nil
 }
 
