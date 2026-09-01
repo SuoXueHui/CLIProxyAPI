@@ -1,0 +1,42 @@
+name: ${CPA_ROUTER_PROJECT_NAME:-cpa-router}
+
+services:
+  cpa-router:
+    image: ${CPA_ROUTER_IMAGE:-nginx:1.28-alpine}
+    pull_policy: missing
+    restart: unless-stopped
+    stop_signal: SIGQUIT
+    stop_grace_period: 24h
+    ports:
+      - "${CPA_ROUTER_BIND_ADDRESS:-127.0.0.1}:${CPA_ROUTER_HOST_PORT:-18379}:8317"
+    volumes:
+      # Mount the directory so an atomic backend.conf replacement is visible on reload.
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8317/cpa-router-health | grep -qx 'cpa-router ok'"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      caller:
+        aliases:
+          # This must be the sole authoritative alias after the first handoff.
+          - ${CPA_ROUTER_SHARED_ALIAS:-cli-proxy-api}
+      backend: {}
+
+networks:
+  caller:
+    name: ${CPA_CALLER_NETWORK:-sub2api-access}
+    external: true
+  backend:
+    name: ${CPA_ROUTER_BACKEND_NETWORK:-cpa-router-backend}
+    external: true
