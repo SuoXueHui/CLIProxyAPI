@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	log "github.com/sirupsen/logrus"
 )
@@ -28,6 +30,8 @@ func (s *Server) registerManagementRoutes() {
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
+		mgmt.GET("/lifecycle", s.getLifecycleStatus)
+		mgmt.PUT("/lifecycle", s.putLifecycleStatus)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/codex-weekly-overdraft", s.mgmt.GetCodexWeeklyOverdraftStatus)
@@ -190,6 +194,41 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}
+}
+
+type lifecycleTransitionRequest struct {
+	Target             lifecycle.Mode `json:"target"`
+	ExpectedGeneration uint64         `json:"expected_generation"`
+}
+
+func (s *Server) getLifecycleStatus(c *gin.Context) {
+	if s == nil || s.lifecycleController == nil {
+		c.JSON(http.StatusOK, lifecycle.Status{Mode: lifecycle.ModeActive, Generation: 1, AcceptingNew: true, CredentialWriter: true, WriterLeaseHeld: true, AutoRefresh: true})
+		return
+	}
+	c.JSON(http.StatusOK, s.lifecycleController.Status())
+}
+
+func (s *Server) putLifecycleStatus(c *gin.Context) {
+	if s == nil || s.lifecycleController == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "lifecycle control is disabled"})
+		return
+	}
+	var request lifecycleTransitionRequest
+	if errBind := c.ShouldBindJSON(&request); errBind != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid lifecycle request"})
+		return
+	}
+	status, errTransition := s.lifecycleController.Transition(c.Request.Context(), request.Target, request.ExpectedGeneration)
+	if errTransition != nil {
+		statusCode := http.StatusConflict
+		if !errors.Is(errTransition, lifecycle.ErrGenerationConflict) && !errors.Is(errTransition, lifecycle.ErrInvalidTransition) {
+			statusCode = http.StatusServiceUnavailable
+		}
+		c.JSON(statusCode, gin.H{"error": errTransition.Error(), "status": status})
+		return
+	}
+	c.JSON(http.StatusOK, status)
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {

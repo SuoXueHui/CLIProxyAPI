@@ -6,9 +6,13 @@ package cliproxy
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -228,11 +232,15 @@ func (b *Builder) Build() (*Service, error) {
 	}
 
 	configaccess.Register(&b.cfg.SDKConfig)
+	lifecycleController, writerLease, writerLeasePath, errLifecycle := buildLifecycleController(b.cfg)
+	if errLifecycle != nil {
+		return nil, errLifecycle
+	}
 	pluginHost := b.pluginHost
 	if pluginHost == nil {
 		pluginHost = pluginhost.New()
 	}
-	if b.cfg != nil {
+	if b.cfg != nil && (lifecycleController == nil || lifecycleController.Status().Mode == lifecycle.ModeActive) {
 		pluginHost.ApplyConfig(context.Background(), b.cfg)
 		pluginHost.RegisterFrontendAuthProviders()
 	}
@@ -278,7 +286,11 @@ func (b *Builder) Build() (*Service, error) {
 		pluginHost:          pluginHost,
 		appliedRoutingState: appliedRoutingState,
 		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
+		lifecycleController: lifecycleController,
+		writerLease:         writerLease,
+		writerLeasePath:     writerLeasePath,
 	}
+	service.configureLifecycleControl()
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
 	}
@@ -289,7 +301,41 @@ func (b *Builder) Build() (*Service, error) {
 			service.reloadConfigFromWatcher()
 		}),
 	)
+	if lifecycleController != nil {
+		service.serverOptions = append(service.serverOptions, api.WithLifecycleController(lifecycleController))
+	}
 	return service, nil
+}
+
+func buildLifecycleController(cfg *config.Config) (*lifecycle.Controller, *lifecycle.WriterLease, string, error) {
+	rawMode, configured := os.LookupEnv("CLIPROXY_LIFECYCLE_MODE")
+	if !configured {
+		return nil, nil, "", nil
+	}
+	mode, errMode := lifecycle.ParseMode(rawMode)
+	if errMode != nil {
+		return nil, nil, "", fmt.Errorf("cliproxy: %w", errMode)
+	}
+	if mode == lifecycle.ModeDraining {
+		return nil, nil, "", fmt.Errorf("cliproxy: draining cannot be used as an initial lifecycle mode")
+	}
+	lockPath := strings.TrimSpace(os.Getenv("CLIPROXY_WRITER_LOCK_PATH"))
+	if lockPath == "" {
+		authDir := "auths"
+		if cfg != nil && strings.TrimSpace(cfg.AuthDir) != "" {
+			authDir = cfg.AuthDir
+		}
+		lockPath = filepath.Join(authDir, ".cliproxy-runtime", "credential-writer.lock")
+	}
+	controller := lifecycle.NewController(mode)
+	if mode != lifecycle.ModeActive {
+		return controller, nil, lockPath, nil
+	}
+	lease, errLease := lifecycle.AcquireWriterLease(lockPath)
+	if errLease != nil {
+		return nil, nil, "", fmt.Errorf("cliproxy: %w", errLease)
+	}
+	return controller, lease, lockPath, nil
 }
 
 func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {

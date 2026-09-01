@@ -85,13 +85,17 @@ func (s *Service) Run(ctx context.Context) error {
 	s.applyRetryConfig(s.cfg)
 	s.configureCooldownStateStore(s.cfg)
 
-	s.registerPluginAuthParser()
+	if s.lifecycleActive() {
+		s.registerPluginAuthParser()
+	}
 	if s.coreManager != nil && !homeEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
-		if errEgress := s.initializeLoadedAuthEgress(ctx); errEgress != nil {
-			return fmt.Errorf("cliproxy: initialize IPv6 egress: %w", errEgress)
+		if s.lifecycleActive() {
+			if errEgress := s.initializeLoadedAuthEgress(ctx); errEgress != nil {
+				return fmt.Errorf("cliproxy: initialize IPv6 egress: %w", errEgress)
+			}
 		}
 		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
 		if s.cfg.SaveCooldownStatus {
@@ -132,7 +136,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
-	s.syncPluginRuntimeConfig(ctx)
+	if s.lifecycleActive() {
+		s.syncPluginRuntimeConfig(ctx)
+	}
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)
 	}
@@ -187,38 +193,18 @@ func (s *Service) Run(ctx context.Context) error {
 		s.hooks.OnAfterStart(s)
 	}
 
-	if !homeEnabled {
-		var watcherWrapper *WatcherWrapper
-		reloadCallback := func(newCfg *config.Config) { s.applyWatcherConfigUpdate(newCfg) }
-
-		watcherWrapper, errCreate := s.watcherFactory(s.configPath, s.cfg.AuthDir, reloadCallback)
-		if errCreate != nil {
-			return fmt.Errorf("cliproxy: failed to create watcher: %w", errCreate)
+	if !homeEnabled && s.lifecycleActive() {
+		if errWatcher := s.startFileWatcher(ctx); errWatcher != nil {
+			return errWatcher
 		}
-		s.watcher = watcherWrapper
-		s.ensureAuthUpdateQueue(ctx)
-		if s.authUpdates != nil {
-			watcherWrapper.SetAuthUpdateQueue(s.authUpdates)
-		}
-		watcherWrapper.SetConfig(s.cfg)
-		s.registerPluginAuthParser()
-
-		watcherCtx, watcherCancel := context.WithCancel(context.Background())
-		s.watcherCancel = watcherCancel
-		if errStart := watcherWrapper.Start(watcherCtx); errStart != nil {
-			return fmt.Errorf("cliproxy: failed to start watcher: %w", errStart)
-		}
-		log.Info("file watcher started for config and auth directory changes")
-		s.syncPluginModelRuntime(ctx)
 	}
 
 	s.registerModelRefreshCallback()
 
 	// Prefer core auth manager auto refresh if available.
-	if s.coreManager != nil && !homeEnabled {
-		interval := 15 * time.Minute
-		s.coreManager.StartAutoRefresh(context.Background(), interval)
-		log.Infof("core auth auto-refresh started (interval=%s)", interval)
+	if s.coreManager != nil && !homeEnabled && s.lifecycleActive() {
+		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
+		log.Infof("core auth auto-refresh started (interval=%s)", lifecycleAutoRefreshInterval)
 	}
 
 	select {
@@ -359,6 +345,8 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				s.accessManager.SetProviders(sdkaccess.RegisteredProviders())
 			}
 		}
+
+		s.lifecycleCleanup()
 
 		usage.StopDefault()
 	})

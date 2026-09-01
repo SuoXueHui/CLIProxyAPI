@@ -43,6 +43,7 @@ install -m 0644 deploy/cpa-router/compose.yaml "$ROUTER_DIR/compose.yaml"
 install -m 0644 deploy/cpa-router/nginx/nginx.conf "$ROUTER_DIR/nginx/nginx.conf"
 install -m 0644 deploy/cpa-router/nginx/conf.d/backend.conf "$ROUTER_DIR/nginx/conf.d/backend.conf"
 install -m 0644 deploy/cpa-router/nginx/conf.d/proxy.conf "$ROUTER_DIR/nginx/conf.d/proxy.conf"
+install -m 0644 deploy/cpa-router/nginx/conf.d/proxy-params.inc "$ROUTER_DIR/nginx/conf.d/proxy-params.inc"
 ```
 
 Copy `.env.example` to `$ROUTER_DIR/.env`, pin `CPA_ROUTER_IMAGE` to the
@@ -135,19 +136,22 @@ scripts/cpa-router/reload-backend.sh \
   --compose-file "$ROUTER_DIR/compose.yaml" \
   --env-file "$ROUTER_DIR/.env" \
   --backend-file "$ROUTER_DIR/nginx/conf.d/backend.conf" \
-  --backend cpa-green:8317
+  --backend cpa-green:8317 \
+  --management-backend cpa-blue:8317
 
 scripts/cpa-router/reload-backend.sh \
   --compose-file "$ROUTER_DIR/compose.yaml" \
   --env-file "$ROUTER_DIR/.env" \
   --backend-file "$ROUTER_DIR/nginx/conf.d/backend.conf" \
   --backend cpa-green:8317 \
+  --management-backend cpa-blue:8317 \
   --apply
 ```
 
 HUP leaves existing HTTP/SSE/WebSocket connections on the old Nginx workers;
-new connections use green. No `docker compose up`, restart, or recreate belongs
-in a routine backend switch.
+new proxy connections use green. Management and usage collection stay on blue
+until its existing requests and durable outbox are both drained. No `docker
+compose up`, restart, or recreate belongs in a routine backend switch.
 
 ## 5. Finish The First Alias Handoff
 
@@ -162,15 +166,29 @@ sudo scripts/cpa-router/caller-dnat.sh verify --caller "$CALLER_B" --old-ip "$OL
 ```
 
 Only after both direct counts reach zero, the legacy request drain is zero, and
-its usage outbox is drained may legacy blue be stopped or disconnected from
-`sub2api-access`. That operation removes the duplicate alias owner. Confirm the
-router is now the sole alias owner and every caller resolves its IP:
+its usage outbox is drained may legacy blue be stopped. Promote green to active,
+then reload both proxy and management backends to green. Only after those gates
+may blue be disconnected from `sub2api-access`; that operation removes the
+duplicate alias owner.
+
+```bash
+scripts/cpa-router/reload-backend.sh \
+  --compose-file "$ROUTER_DIR/compose.yaml" \
+  --env-file "$ROUTER_DIR/.env" \
+  --backend-file "$ROUTER_DIR/nginx/conf.d/backend.conf" \
+  --backend cpa-green:8317 \
+  --management-backend cpa-green:8317 \
+  --apply
+```
+
+Confirm the router is now the sole alias owner and every caller resolves its IP:
 
 ```bash
 scripts/cpa-router/verify-router.sh \
   --compose-file "$ROUTER_DIR/compose.yaml" \
   --env-file "$ROUTER_DIR/.env" \
   --expected-backend cpa-green:8317 \
+  --expected-management-backend cpa-green:8317 \
   --caller "$CALLER_A" \
   --caller "$CALLER_B"
 ```
@@ -200,13 +218,15 @@ scripts/cpa-router/reload-backend.sh \
   --compose-file "$ROUTER_DIR/compose.yaml" \
   --env-file "$ROUTER_DIR/.env" \
   --backend-file "$ROUTER_DIR/nginx/conf.d/backend.conf" \
-  --backend cpa-blue:8317
+  --backend cpa-blue:8317 \
+  --management-backend cpa-blue:8317
 
 scripts/cpa-router/reload-backend.sh \
   --compose-file "$ROUTER_DIR/compose.yaml" \
   --env-file "$ROUTER_DIR/.env" \
   --backend-file "$ROUTER_DIR/nginx/conf.d/backend.conf" \
   --backend cpa-blue:8317 \
+  --management-backend cpa-blue:8317 \
   --apply
 ```
 

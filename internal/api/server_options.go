@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -27,6 +28,14 @@ type serverOptionConfig struct {
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
+	lifecycleController   *lifecycle.Controller
+}
+
+// WithLifecycleController enables release admission and lifecycle management.
+func WithLifecycleController(controller *lifecycle.Controller) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.lifecycleController = controller
+	}
 }
 
 // ServerOption customises HTTP server construction.

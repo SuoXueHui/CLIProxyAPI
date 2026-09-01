@@ -11,6 +11,7 @@ SERVICE_NAME="cpa-router"
 CALLER_NETWORK="sub2api-access"
 SHARED_ALIAS="cli-proxy-api"
 EXPECTED_BACKEND=""
+EXPECTED_MANAGEMENT_BACKEND=""
 ROUTER_URL="http://127.0.0.1:18379"
 PUBLIC_URL=""
 CALLERS=()
@@ -29,6 +30,8 @@ Options:
   --shared-alias NAME       Sole router alias (default: cli-proxy-api).
   --expected-backend HOST:PORT
                             Require this backend in loaded Nginx config.
+  --expected-management-backend HOST:PORT
+                            Require this management backend in loaded config.
   --router-url URL          Router host probe base URL; empty disables it.
   --public-url URL          Optional public root probe URL.
   --caller CONTAINER        Repeat for every internal caller to check DNS.
@@ -90,6 +93,11 @@ while (($# > 0)); do
             EXPECTED_BACKEND=$2
             shift 2
             ;;
+        --expected-management-backend)
+            (($# >= 2)) || die "--expected-management-backend requires a value"
+            EXPECTED_MANAGEMENT_BACKEND=$2
+            shift 2
+            ;;
         --router-url)
             (($# >= 2)) || die "--router-url requires a value"
             ROUTER_URL=$2
@@ -124,6 +132,9 @@ done
 if [[ -n "$EXPECTED_BACKEND" ]]; then
     [[ "$EXPECTED_BACKEND" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*:[0-9]{1,5}$ ]] || die "expected backend must be HOST:PORT"
 fi
+if [[ -n "$EXPECTED_MANAGEMENT_BACKEND" ]]; then
+    [[ "$EXPECTED_MANAGEMENT_BACKEND" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*:[0-9]{1,5}$ ]] || die "expected management backend must be HOST:PORT"
+fi
 for url in "$ROUTER_URL" "$PUBLIC_URL"; do
     [[ -z "$url" || "$url" =~ ^https?://[^[:space:]]+$ ]] || die "probe URLs must use http or https and contain no whitespace"
     [[ "$url" != *"@"* && "$url" != *"?"* && "$url" != *"#"* ]] || die "probe URLs must not contain userinfo, query strings, or fragments"
@@ -150,8 +161,24 @@ container_id=$("${compose[@]}" ps -q "$SERVICE_NAME")
 
 "${compose[@]}" exec -T "$SERVICE_NAME" nginx -t
 rendered_config=$("${compose[@]}" exec -T "$SERVICE_NAME" nginx -T 2>&1)
+upstream_contains() {
+    local upstream_name=$1 expected=$2
+    awk -v upstream_name="$upstream_name" -v expected="$expected" '
+        $1 == "upstream" && $2 == upstream_name { inside = 1; next }
+        inside && $1 == "}" { exit found ? 0 : 1 }
+        inside && $1 == "server" {
+            value = $2
+            sub(/;$/, "", value)
+            if (value == expected) found = 1
+        }
+        END { if (inside) exit found ? 0 : 1 }
+    ' <<<"$rendered_config"
+}
 if [[ -n "$EXPECTED_BACKEND" ]]; then
-    grep -Fq "server ${EXPECTED_BACKEND};" <<<"$rendered_config" || die "loaded Nginx config does not contain expected backend $EXPECTED_BACKEND"
+    upstream_contains cpa_proxy_backend "$EXPECTED_BACKEND" || die "loaded proxy upstream does not contain $EXPECTED_BACKEND"
+fi
+if [[ -n "$EXPECTED_MANAGEMENT_BACKEND" ]]; then
+    upstream_contains cpa_management_backend "$EXPECTED_MANAGEMENT_BACKEND" || die "loaded management upstream does not contain $EXPECTED_MANAGEMENT_BACKEND"
 fi
 
 network_container_ids=$(docker network inspect --format '{{range $id, $container := .Containers}}{{println $id}}{{end}}' "$CALLER_NETWORK") || die "caller network not found: $CALLER_NETWORK"
@@ -189,5 +216,5 @@ if [[ -n "$PUBLIC_URL" ]]; then
     probe_url "public root" "${PUBLIC_URL%/}/"
 fi
 
-printf 'Router verification passed: backend=%s alias-owner=%s restart=0 OOMKilled=false\n' \
-    "${EXPECTED_BACKEND:-not-asserted}" "$SHARED_ALIAS"
+printf 'Router verification passed: proxy=%s management=%s alias-owner=%s restart=0 OOMKilled=false\n' \
+    "${EXPECTED_BACKEND:-not-asserted}" "${EXPECTED_MANAGEMENT_BACKEND:-not-asserted}" "$SHARED_ALIAS"

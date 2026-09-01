@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/lifecycle"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
@@ -100,6 +101,12 @@ type Service struct {
 
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
+
+	// lifecycleController is non-nil only for explicitly lifecycle-managed instances.
+	lifecycleController *lifecycle.Controller
+	writerLease         *lifecycle.WriterLease
+	writerLeasePath     string
+	lifecycleMu         sync.Mutex
 
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once

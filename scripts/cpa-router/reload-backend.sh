@@ -10,16 +10,19 @@ ENV_FILE=""
 PROJECT_NAME="cpa-router"
 SERVICE_NAME="cpa-router"
 BACKEND=""
+MANAGEMENT_BACKEND=""
 KEEPALIVE=64
 APPLY=0
 
 usage() {
     cat <<'USAGE'
 Usage:
-  reload-backend.sh --backend HOST:PORT [options]
+  reload-backend.sh --backend HOST:PORT --management-backend HOST:PORT [options]
 
 Options:
   --backend HOST:PORT     Required backend, for example cpa-green:8317.
+  --management-backend HOST:PORT
+                          Required management/outbox backend.
   --compose-file PATH     Router Compose file.
   --backend-file PATH     Host backend.conf path.
   --env-file PATH         Explicit Compose environment file.
@@ -44,6 +47,11 @@ while (($# > 0)); do
         --backend)
             (($# >= 2)) || die "--backend requires a value"
             BACKEND=$2
+            shift 2
+            ;;
+        --management-backend)
+            (($# >= 2)) || die "--management-backend requires a value"
+            MANAGEMENT_BACKEND=$2
             shift 2
             ;;
         --compose-file)
@@ -91,9 +99,13 @@ while (($# > 0)); do
 done
 
 [[ -n "$BACKEND" ]] || die "--backend is required"
+[[ -n "$MANAGEMENT_BACKEND" ]] || die "--management-backend is required"
 [[ "$BACKEND" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*:([0-9]{1,5})$ ]] || die "backend must be HOST:PORT using a DNS name or IPv4 address"
 BACKEND_PORT=${BASH_REMATCH[1]}
 ((BACKEND_PORT >= 1 && BACKEND_PORT <= 65535)) || die "backend port must be between 1 and 65535"
+[[ "$MANAGEMENT_BACKEND" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*:([0-9]{1,5})$ ]] || die "management backend must be HOST:PORT using a DNS name or IPv4 address"
+MANAGEMENT_BACKEND_PORT=${BASH_REMATCH[1]}
+((MANAGEMENT_BACKEND_PORT >= 1 && MANAGEMENT_BACKEND_PORT <= 65535)) || die "management backend port must be between 1 and 65535"
 [[ "$KEEPALIVE" =~ ^[0-9]+$ ]] && ((KEEPALIVE >= 1 && KEEPALIVE <= 10000)) || die "keepalive must be between 1 and 10000"
 [[ "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid Compose project name"
 [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid Compose service name"
@@ -108,6 +120,7 @@ compose+=(--project-name "$PROJECT_NAME" --file "$COMPOSE_FILE")
 
 if ((APPLY == 0)); then
     printf 'DRY-RUN: backend would change to %s\n' "$BACKEND"
+    printf 'DRY-RUN: management backend would change to %s\n' "$MANAGEMENT_BACKEND"
     printf 'DRY-RUN: candidate would be validated in a one-shot Compose container\n'
     printf 'DRY-RUN: %s would be replaced atomically, then nginx -t and HUP reload would run\n' "$BACKEND_FILE"
     if command -v docker >/dev/null 2>&1; then
@@ -162,8 +175,13 @@ lock_acquired=1
 
 cat >"$candidate" <<EOF
 # Managed by scripts/cpa-router/reload-backend.sh.
-upstream cpa_backend {
+upstream cpa_proxy_backend {
     server ${BACKEND};
+    keepalive ${KEEPALIVE};
+}
+
+upstream cpa_management_backend {
+    server ${MANAGEMENT_BACKEND};
     keepalive ${KEEPALIVE};
 }
 EOF
@@ -186,8 +204,22 @@ changed=1
 "${compose[@]}" exec -T "$SERVICE_NAME" nginx -s reload
 
 rendered_config=$("${compose[@]}" exec -T "$SERVICE_NAME" nginx -T 2>&1)
-grep -Fq "server ${BACKEND};" <<<"$rendered_config" || die "reloaded configuration does not contain the expected backend"
+upstream_contains() {
+    local upstream_name=$1 expected=$2
+    awk -v upstream_name="$upstream_name" -v expected="$expected" '
+        $1 == "upstream" && $2 == upstream_name { inside = 1; next }
+        inside && $1 == "}" { exit found ? 0 : 1 }
+        inside && $1 == "server" {
+            value = $2
+            sub(/;$/, "", value)
+            if (value == expected) found = 1
+        }
+        END { if (inside) exit found ? 0 : 1 }
+    ' <<<"$rendered_config"
+}
+upstream_contains cpa_proxy_backend "$BACKEND" || die "reloaded proxy upstream does not contain $BACKEND"
+upstream_contains cpa_management_backend "$MANAGEMENT_BACKEND" || die "reloaded management upstream does not contain $MANAGEMENT_BACKEND"
 [[ "$("${compose[@]}" ps --status running --services "$SERVICE_NAME")" == "$SERVICE_NAME" ]] || die "router service is not running"
 
 changed=0
-printf 'Router backend reloaded: %s\n' "$BACKEND"
+printf 'Router backends reloaded: proxy=%s management=%s\n' "$BACKEND" "$MANAGEMENT_BACKEND"
