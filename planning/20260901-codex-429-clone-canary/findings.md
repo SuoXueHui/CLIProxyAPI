@@ -83,3 +83,10 @@
 - Manager `79e40055` 已在浮动批量操作栏增加“分身设置”；仅当所选项全部为非 runtime-only Codex 物理账号时可用，混选 provider 会禁用，提交复用现有 auth-index/source-file 一致性保护。
 - 批量弹窗支持统一开启或关闭，开启默认 6×10，范围与单账号配置一致：分身 1-64、单分身并发 1-1000，并实时显示总容量。
 - 线上已登录页面完成无写入验收：选择 1 个 Codex 账号后按钮可见，弹窗显示 6×10=60，四语言文案在正确 `accounts` 命名空间；点击取消并清除选择后，49 个 auth 仍为 `replica_present=0`。
+
+## 2026-09-01 分身并发实时显示与重新导入语义
+
+- `replica_active` 来自 Core `/v0/management/auth-files` 的瞬时投影；首版 Manager 只在完整认证列表重新加载时更新，因此页面上的 `active/total` 会滞后。
+- Manager `24ae4799` 增加 2 秒级局部轮询：仅账号页可见且存在分身账号时启用，只更新 replica summary map，不触发完整 credential/history/quota workspace 刷新；页面隐藏或没有分身账号时停止。
+- 生产 Core 的 `/auth-files` 在当前 49 个物理账号、132 个分身规模下实测单次 15-34ms；线上连续四次页面采样中并发数字自动变化，22 行均参与刷新，控制台无错误。
+- OAuth 重新登录经 `saveTokenRecord -> MergeExistingAuthMetadata`，会保留现有非 token metadata，因此 `codex_replica` 不会消失。手工上传文件或粘贴 JSON 同名覆盖经 `writeAuthFile -> os.WriteFile` 原样替换；若新 JSON 省略 `codex_replica`，分身配置会消失，若显式携带则以新值为准。

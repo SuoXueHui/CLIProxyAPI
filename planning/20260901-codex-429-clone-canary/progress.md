@@ -39,3 +39,6 @@
 - 2026-09-01：发现首版 Manager 只具备单账号分身配置，没有账号选择后的批量入口；新增批量“分身设置”按钮、统一启停弹窗、6×10 默认值、范围校验、混选保护和四语言文案。
 - 2026-09-01：批量功能通过账号页 225 条测试、账号工作区定向 261 条测试、全量 217 文件/2694 条测试、type-check、lint 0 error、Manager Server 全量测试和 single-file 生产构建。
 - 2026-09-01：Manager 最终镜像 `v1.12.6-codex-replica-bulk-79e40055-amd64` 已 Compose 发布；线上无写入视觉验收确认按钮、弹窗和 6×10=60 文案，账号 auth 文件未产生 `codex_replica`，Core/Manager/Router healthy。
+- 2026-09-01：定位列表 `active/total` 仅随完整 auth-files reload 更新；实现可见页且存在分身账号时的 2 秒局部运行态轮询，测试验证数字从 2/60 自动更新为 4/60且完整 workspace 只加载一次。
+- 2026-09-01：实时显示通过 217 个测试文件/2699 条测试、type-check、lint 0 error、Manager Server 全量测试和 single-file 构建；Manager `24ae4799` 已发布为 `v1.12.6-replica-live-24ae4799-amd64`。
+- 2026-09-01：线上 22 行连续采样确认并发值自动变化，Core/Manager/Router healthy；同时确认 OAuth 重登录保留分身配置，手工上传/粘贴同名 JSON 若省略 `codex_replica` 则会覆盖掉配置。

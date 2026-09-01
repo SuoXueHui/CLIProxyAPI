@@ -33,6 +33,7 @@
 - [completed] 16. 单候选只读/usage 验收后完成 ownership transfer，并观察生产窗口
 - [completed] 17. 将 Core 收口为 Compose 管理实例，发布 Manager 并完成线上 UI 验收
 - [completed] 18. 补齐账号选择后的批量分身设置入口，重新发布 Manager 并完成无写入视觉验收
+- [completed] 19. 将账号列表分身并发改为 2 秒级局部刷新，并确认重新导入的配置保留边界
 
 ## 安全边界
 
