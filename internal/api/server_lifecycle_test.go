@@ -21,6 +21,7 @@ func TestLifecycleMiddlewareGatesProxyAndManagementWrites(t *testing.T) {
 	engine.PUT("/v0/management/config", func(c *gin.Context) { c.Status(http.StatusOK) })
 	engine.PUT("/v0/management/lifecycle", func(c *gin.Context) { c.Status(http.StatusOK) })
 	engine.GET("/v0/management/codex-auth-url", func(c *gin.Context) { c.Status(http.StatusOK) })
+	engine.GET("/v0/management/status", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	for _, tc := range []struct {
 		method string
@@ -33,6 +34,7 @@ func TestLifecycleMiddlewareGatesProxyAndManagementWrites(t *testing.T) {
 		{http.MethodPut, "/v0/management/config", http.StatusServiceUnavailable},
 		{http.MethodPut, "/v0/management/lifecycle", http.StatusOK},
 		{http.MethodGet, "/v0/management/codex-auth-url", http.StatusServiceUnavailable},
+		{http.MethodGet, "/v0/management/status", http.StatusOK},
 	} {
 		recorder := httptest.NewRecorder()
 		engine.ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.path, nil))
