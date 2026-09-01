@@ -41,6 +41,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+func lifecycleModeAllowsRuntime() bool {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("CLIPROXY_LIFECYCLE_MODE")))
+	return mode == "" || mode == "active" || mode == "draining"
+}
+
 var (
 	Version           = "dev"
 	Commit            = "none"
@@ -138,9 +143,11 @@ func main() {
 	}
 
 	pluginHost := pluginhost.New()
-	if bootstrapCfg := loadPluginBootstrapConfig(pluginBootstrapConfigPath(os.Args[1:], DefaultConfigPath)); bootstrapCfg != nil {
-		pluginHost.ApplyConfig(context.Background(), bootstrapCfg)
-		pluginHost.RegisterCommandLineFlags(context.Background(), flag.CommandLine)
+	if lifecycleModeAllowsRuntime() {
+		if bootstrapCfg := loadPluginBootstrapConfig(pluginBootstrapConfigPath(os.Args[1:], DefaultConfigPath)); bootstrapCfg != nil {
+			pluginHost.ApplyConfig(context.Background(), bootstrapCfg)
+			pluginHost.RegisterCommandLineFlags(context.Background(), flag.CommandLine)
+		}
 	}
 
 	// Parse the command-line flags.
@@ -616,7 +623,9 @@ func main() {
 
 	// Register built-in access providers before constructing services.
 	configaccess.Register(&cfg.SDKConfig)
-	pluginHost.ApplyConfig(context.Background(), cfg)
+	if lifecycleModeAllowsRuntime() {
+		pluginHost.ApplyConfig(context.Background(), cfg)
+	}
 	if configLoadedFromHome && homePluginStatusReady {
 		errHomePluginLoad := homeplugins.MarkLoadResults(&homePluginSyncReport, pluginHost)
 		errReportPlugins := home.ReportPluginStatus(context.Background(), homeClient, cfg.Home.NodeID, homePluginSyncReport)
