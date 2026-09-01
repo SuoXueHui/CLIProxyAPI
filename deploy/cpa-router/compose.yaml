@@ -7,6 +7,10 @@ services:
     restart: unless-stopped
     stop_signal: SIGQUIT
     stop_grace_period: 24h
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "${CPA_ROUTER_BIND_ADDRESS:-127.0.0.1}:${CPA_ROUTER_HOST_PORT:-18379}:8317"
     volumes:
