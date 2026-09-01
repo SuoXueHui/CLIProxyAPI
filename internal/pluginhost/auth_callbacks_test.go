@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,8 @@ import (
 type memoryAuthStorage struct {
 	payload []byte
 }
+
+var _ AuthMutationGate = (*Host)(nil)
 
 func (s *memoryAuthStorage) RawJSON() []byte {
 	if s == nil {
@@ -273,5 +276,41 @@ func TestHostAuthSaveCallbackWritesPhysicalFile(t *testing.T) {
 	auths := host.currentAuthManager().List()
 	if len(auths) != 1 || auths[0].FileName != "saved.json" {
 		t.Fatalf("auths = %#v, want one registered auth", auths)
+	}
+}
+
+func TestHostAuthMutationDefaultsToEnabledAndCanToggle(t *testing.T) {
+	host := New()
+	if !host.AuthWritesEnabled() {
+		t.Fatal("AuthWritesEnabled() = false, want backward-compatible true default")
+	}
+	host.SetAuthWritesEnabled(false)
+	if host.AuthWritesEnabled() {
+		t.Fatal("AuthWritesEnabled() = true after disabling auth mutation")
+	}
+}
+
+func TestHostAuthSaveCallbackRejectsWhenAuthMutationDisabled(t *testing.T) {
+	authDir := t.TempDir()
+	host := New()
+	host.runtimeConfig = &config.Config{AuthDir: authDir}
+	host.SetAuthManager(coreauth.NewManager(nil, nil, nil))
+	host.SetAuthWritesEnabled(false)
+
+	req, errMarshal := json.Marshal(pluginapi.HostAuthSaveRequest{
+		Name: "blocked.json",
+		JSON: json.RawMessage(`{"type":"demo","email":"blocked@example.com","api_key":"blocked-key"}`),
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal request: %v", errMarshal)
+	}
+	if _, errCall := host.callFromPlugin(context.Background(), pluginabi.MethodHostAuthSave, req); !errors.Is(errCall, ErrAuthMutationDisabled) {
+		t.Fatalf("host.auth.save error = %v, want auth mutation gate rejection", errCall)
+	}
+	if _, errStat := os.Stat(filepath.Join(authDir, "blocked.json")); !os.IsNotExist(errStat) {
+		t.Fatalf("host.auth.save wrote a file while disabled: %v", errStat)
+	}
+	if auths := host.currentAuthManager().List(); len(auths) != 0 {
+		t.Fatalf("host.auth.save registered auth while disabled: %#v", auths)
 	}
 }

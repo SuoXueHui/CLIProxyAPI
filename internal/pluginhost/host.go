@@ -57,8 +57,13 @@ type pluginLoadResult struct {
 }
 
 type Host struct {
-	applyMu                chan struct{}
-	mu                     sync.Mutex
+	applyMu chan struct{}
+	mu      sync.Mutex
+
+	// authMutationMu fences plugin credential writes during read-only serving.
+	authMutationMu      sync.RWMutex
+	authMutationBlocked bool
+
 	loader                 pluginLoader
 	loaded                 map[string]*loadedPlugin
 	retired                map[string][]*loadedPlugin
@@ -87,6 +92,54 @@ type Host struct {
 	modelStreams           *modelStreamBridge
 	callbackContexts       *callbackContextRegistry
 	snapshot               atomic.Value
+}
+
+// ErrAuthMutationDisabled indicates that lifecycle mode forbids plugin auth mutation.
+var ErrAuthMutationDisabled = errors.New("pluginhost: auth mutation is disabled")
+
+// AuthMutationGate is implemented by plugin hosts whose credential mutation
+// callbacks must be fenced by the service lifecycle controller.
+type AuthMutationGate interface {
+	SetAuthWritesEnabled(enabled bool)
+	AuthWritesEnabled() bool
+}
+
+// SetAuthWritesEnabled controls plugin callbacks that mutate credential state.
+// Disabling waits for auth mutations that already passed the gate to finish.
+func (h *Host) SetAuthWritesEnabled(enabled bool) {
+	if h == nil {
+		return
+	}
+	h.authMutationMu.Lock()
+	h.authMutationBlocked = !enabled
+	h.authMutationMu.Unlock()
+}
+
+// AuthWritesEnabled reports whether plugins may mutate credential state.
+func (h *Host) AuthWritesEnabled() bool {
+	if h == nil {
+		return false
+	}
+	h.authMutationMu.RLock()
+	enabled := !h.authMutationBlocked
+	h.authMutationMu.RUnlock()
+	return enabled
+}
+
+func (h *Host) lockAuthMutation() bool {
+	if h == nil {
+		return false
+	}
+	h.authMutationMu.RLock()
+	if h.authMutationBlocked {
+		h.authMutationMu.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (h *Host) unlockAuthMutation() {
+	h.authMutationMu.RUnlock()
 }
 
 func New() *Host {

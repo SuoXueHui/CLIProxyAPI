@@ -554,6 +554,10 @@ func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store Coold
 	if m == nil || store == nil {
 		return true
 	}
+	if !m.lockCredentialWrites() {
+		return true
+	}
+	defer m.unlockCredentialWrites()
 	if ctx == nil {
 		ctx = context.Background()
 	}

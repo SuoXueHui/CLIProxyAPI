@@ -390,10 +390,13 @@ func (m *Manager) tryRefreshExecutionAuthAfterUnauthorized(ctx context.Context, 
 	if !isUnauthorizedError(execErr) || auth.AuthKind() != AuthKindOAuth {
 		return auth, false, nil
 	}
+	if !m.WritesEnabled() {
+		return auth, false, nil
+	}
 
 	log.Debugf("unauthorized Home response for %s (%s), refreshing credentials before redispatch", auth.Provider, auth.ID)
 	target := auth.Clone()
-	updated, errRefresh := executor.Refresh(ctx, target)
+	updated, errRefresh := m.refreshCredential(ctx, executor, target)
 	if errRefresh != nil {
 		log.Debugf("Home credential refresh before redispatch failed for %s (%s)", auth.Provider, auth.ID)
 		return auth, false, errRefresh
@@ -498,6 +501,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if id == "" {
 		return nil, errors.New("auth id is empty")
 	}
+	if !m.WritesEnabled() {
+		return nil, ErrCredentialWritesDisabled
+	}
 
 	lockValue, _ := m.refreshLocks.LoadOrStore(id, &authRefreshLock{})
 	lock, _ := lockValue.(*authRefreshLock)
@@ -536,7 +542,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	}
 
 	cloned := auth.Clone()
-	updated, err := exec.Refresh(ctx, cloned)
+	updated, err := m.refreshCredential(ctx, exec, cloned)
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
 		return nil, err

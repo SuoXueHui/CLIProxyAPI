@@ -1204,6 +1204,9 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
 	if m == nil || executor == nil || auth == nil {
 		return auth, nil
 	}
+	if !m.WritesEnabled() {
+		return auth, nil
+	}
 	preparer, ok := executor.(RequestAuthPreparer)
 	if !ok || preparer == nil || !preparer.ShouldPrepareRequestAuth(auth) {
 		return auth, nil
@@ -1214,7 +1217,7 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
 		if !preparer.ShouldPrepareRequestAuth(target) {
 			return target, nil
 		}
-		updated, errPrepare := preparer.PrepareRequestAuth(ctx, target)
+		updated, errPrepare := m.prepareCredential(ctx, preparer, target)
 		if errPrepare != nil {
 			return auth, errPrepare
 		}
@@ -1242,6 +1245,9 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 	if m == nil || executor == nil || auth == nil {
 		return auth, nil
 	}
+	if !m.WritesEnabled() {
+		return auth, nil
+	}
 	preparer, ok := executor.(RequestAuthPreparer)
 	if !ok || preparer == nil || !preparer.ShouldPrepareRequestAuth(auth) {
 		return auth, nil
@@ -1249,13 +1255,13 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 
 	id := strings.TrimSpace(auth.ID)
 	if id == "" {
-		return preparer.PrepareRequestAuth(ctx, auth.Clone())
+		return m.prepareCredential(ctx, preparer, auth.Clone())
 	}
 
 	lockValue, _ := m.requestPrepareLocks.LoadOrStore(id, &requestAuthPrepareLock{})
 	lock, ok := lockValue.(*requestAuthPrepareLock)
 	if !ok || lock == nil {
-		return preparer.PrepareRequestAuth(ctx, auth.Clone())
+		return m.prepareCredential(ctx, preparer, auth.Clone())
 	}
 
 	lock.mu.Lock()
@@ -1272,7 +1278,7 @@ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecu
 		return target, nil
 	}
 
-	updated, errPrepare := preparer.PrepareRequestAuth(ctx, target)
+	updated, errPrepare := m.prepareCredential(ctx, preparer, target)
 	if errPrepare != nil {
 		return auth, errPrepare
 	}

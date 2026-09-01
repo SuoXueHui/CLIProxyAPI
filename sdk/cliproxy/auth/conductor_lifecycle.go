@@ -260,6 +260,10 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	if m.store == nil || auth == nil {
 		return nil
 	}
+	if !m.lockCredentialWrites() {
+		return nil
+	}
+	defer m.unlockCredentialWrites()
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return fmt.Errorf("persist auth: %w", errWeight)
 	}

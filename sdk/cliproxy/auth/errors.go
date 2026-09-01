@@ -1,5 +1,10 @@
 package auth
 
+import "errors"
+
+// ErrCredentialWritesDisabled indicates that lifecycle mode forbids credential mutation.
+var ErrCredentialWritesDisabled = errors.New("credential writes are disabled")
+
 // ErrorCodeRequestScoped identifies failures tied to the current request rather
 // than the selected credential.
 const ErrorCodeRequestScoped = "request_scoped"

@@ -114,6 +114,10 @@ func (h *Host) callHostAuthGetRuntime(ctx context.Context, request []byte) ([]by
 }
 
 func (h *Host) callHostAuthSave(ctx context.Context, request []byte) ([]byte, error) {
+	if !h.lockAuthMutation() {
+		return nil, ErrAuthMutationDisabled
+	}
+	defer h.unlockAuthMutation()
 	var req pluginapi.HostAuthSaveRequest
 	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host auth save request: %w", errUnmarshal)

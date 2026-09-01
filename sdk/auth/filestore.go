@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -55,15 +56,58 @@ func currentPluginAuthParser() PluginAuthParser {
 
 // FileTokenStore persists token records and auth metadata using the filesystem as backing storage.
 type FileTokenStore struct {
-	mu      sync.Mutex
-	dirLock sync.RWMutex
-	baseDir string
+	mu                      sync.Mutex
+	dirLock                 sync.RWMutex
+	credentialWriteMu       sync.RWMutex
+	credentialWritesBlocked bool
+	baseDir                 string
 }
+
+// ErrCredentialWritesDisabled indicates that lifecycle mode made the store read-only.
+var ErrCredentialWritesDisabled = errors.New("auth filestore: credential writes are disabled")
 
 // NewFileTokenStore creates a token store that saves credentials to disk through the
 // TokenStorage implementation embedded in the token record.
 func NewFileTokenStore() *FileTokenStore {
 	return &FileTokenStore{}
+}
+
+// SetWritesEnabled controls filesystem credential mutations.
+// Disabling waits for writes that already passed the gate to finish.
+func (s *FileTokenStore) SetWritesEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.credentialWriteMu.Lock()
+	s.credentialWritesBlocked = !enabled
+	s.credentialWriteMu.Unlock()
+}
+
+// WritesEnabled reports whether filesystem credential mutations are allowed.
+func (s *FileTokenStore) WritesEnabled() bool {
+	if s == nil {
+		return false
+	}
+	s.credentialWriteMu.RLock()
+	enabled := !s.credentialWritesBlocked
+	s.credentialWriteMu.RUnlock()
+	return enabled
+}
+
+func (s *FileTokenStore) lockCredentialWrites() bool {
+	if s == nil {
+		return false
+	}
+	s.credentialWriteMu.RLock()
+	if s.credentialWritesBlocked {
+		s.credentialWriteMu.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (s *FileTokenStore) unlockCredentialWrites() {
+	s.credentialWriteMu.RUnlock()
 }
 
 // SetBaseDir updates the default directory used for auth JSON persistence when no explicit path is provided.
@@ -75,6 +119,10 @@ func (s *FileTokenStore) SetBaseDir(dir string) {
 
 // Save persists token storage and metadata to the resolved auth file path.
 func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
+	if !s.lockCredentialWrites() {
+		return "", ErrCredentialWritesDisabled
+	}
+	defer s.unlockCredentialWrites()
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
@@ -201,6 +249,10 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 
 // Delete removes the auth file.
 func (s *FileTokenStore) Delete(ctx context.Context, id string) error {
+	if !s.lockCredentialWrites() {
+		return ErrCredentialWritesDisabled
+	}
+	defer s.unlockCredentialWrites()
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return fmt.Errorf("auth filestore: id is empty")
@@ -311,17 +363,20 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		}
 		if projectID == "" {
 			accessToken := extractAccessToken(metadata)
-			if accessToken != "" {
-				fetchedProjectID, errFetch := FetchAntigravityProjectID(context.Background(), accessToken, http.DefaultClient)
-				if errFetch == nil && strings.TrimSpace(fetchedProjectID) != "" {
-					metadata["project_id"] = strings.TrimSpace(fetchedProjectID)
-					if raw, errMarshal := json.Marshal(metadata); errMarshal == nil {
-						if file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600); errOpen == nil {
-							_, _ = file.Write(raw)
-							_ = file.Close()
+			if accessToken != "" && s.lockCredentialWrites() {
+				func() {
+					defer s.unlockCredentialWrites()
+					fetchedProjectID, errFetch := FetchAntigravityProjectID(context.Background(), accessToken, http.DefaultClient)
+					if errFetch == nil && strings.TrimSpace(fetchedProjectID) != "" {
+						metadata["project_id"] = strings.TrimSpace(fetchedProjectID)
+						if raw, errMarshal := json.Marshal(metadata); errMarshal == nil {
+							if file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600); errOpen == nil {
+								_, _ = file.Write(raw)
+								_ = file.Close()
+							}
 						}
 					}
-				}
+				}()
 			}
 		}
 	}

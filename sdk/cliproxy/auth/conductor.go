@@ -113,14 +113,18 @@ type Manager struct {
 	store                     Store
 	cooldownStore             CooldownStateStore
 	pendingCooldownStateStore CooldownStateStore
-	executors                 map[string]ProviderExecutor
-	selector                  Selector
-	hook                      Hook
-	mu                        sync.RWMutex
-	selectorMu                sync.Mutex
-	configCooldownMu          sync.Mutex
-	auths                     map[string]*Auth
-	scheduler                 *authScheduler
+	// credentialWriteMu fences credential mutations while lifecycle mode is read-only.
+	credentialWriteMu       sync.RWMutex
+	credentialWritesBlocked bool
+
+	executors        map[string]ProviderExecutor
+	selector         Selector
+	hook             Hook
+	mu               sync.RWMutex
+	selectorMu       sync.Mutex
+	configCooldownMu sync.Mutex
+	auths            map[string]*Auth
+	scheduler        *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
 	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
@@ -165,6 +169,60 @@ type Manager struct {
 	// refreshLocks serializes credential refresh per auth ID so concurrent
 	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
 	refreshLocks sync.Map
+}
+
+// SetWritesEnabled controls credential refresh, preparation, and persistence.
+// Disabling waits for credential mutations that already passed the gate to finish.
+func (m *Manager) SetWritesEnabled(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.credentialWriteMu.Lock()
+	m.credentialWritesBlocked = !enabled
+	m.credentialWriteMu.Unlock()
+}
+
+// WritesEnabled reports whether credential mutations may enter the write gate.
+func (m *Manager) WritesEnabled() bool {
+	if m == nil {
+		return false
+	}
+	m.credentialWriteMu.RLock()
+	enabled := !m.credentialWritesBlocked
+	m.credentialWriteMu.RUnlock()
+	return enabled
+}
+
+func (m *Manager) lockCredentialWrites() bool {
+	if m == nil {
+		return false
+	}
+	m.credentialWriteMu.RLock()
+	if m.credentialWritesBlocked {
+		m.credentialWriteMu.RUnlock()
+		return false
+	}
+	return true
+}
+
+func (m *Manager) unlockCredentialWrites() {
+	m.credentialWriteMu.RUnlock()
+}
+
+func (m *Manager) refreshCredential(ctx context.Context, exec ProviderExecutor, auth *Auth) (*Auth, error) {
+	if !m.lockCredentialWrites() {
+		return nil, ErrCredentialWritesDisabled
+	}
+	defer m.unlockCredentialWrites()
+	return exec.Refresh(ctx, auth)
+}
+
+func (m *Manager) prepareCredential(ctx context.Context, preparer RequestAuthPreparer, auth *Auth) (*Auth, error) {
+	if !m.lockCredentialWrites() {
+		return auth, nil
+	}
+	defer m.unlockCredentialWrites()
+	return preparer.PrepareRequestAuth(ctx, auth)
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
