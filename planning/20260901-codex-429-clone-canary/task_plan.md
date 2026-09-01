@@ -28,11 +28,14 @@
 - [completed] 11. 基于冻结基线复核交叉改动、执行全量回归并提交 Core/Manager
 - [completed] 12. 推送两个仓库 `master`，构建带明确 commit 的正式候选镜像
 - [completed] 13. 执行生产候选切换与回滚验证；旧 Core 恢复 active，Router 恢复旧 upstream
-- [in_progress] 14. 完成失败门禁记录、候选回收确认与单候选重试方案收口
+- [completed] 14. 完成失败门禁记录、候选回收确认与单候选重试方案收口
+- [completed] 15. 基于 `84c73127` 重建单候选镜像，低流量窗口执行唯一候选切换
+- [completed] 16. 单候选只读/usage 验收后完成 ownership transfer，并观察生产窗口
+- [completed] 17. 将 Core 收口为 Compose 管理实例，发布 Manager 并完成线上 UI 验收
 
 ## 安全边界
 
-- 生产配置、auth、正式容器和数据库未修改；所有写入均位于独立候选目录、镜像和候选容器。
+- 发布前所有写入均隔离在候选目录；正式切换后仅更新 Core/Manager Compose、Router upstream 和候选专用配置，稳定 auth 目录及 Manager 数据库原位保留。
 - 原始 OAuth JSON 只作为输入，不在报告、日志或 planning 文件中写入 token、邮箱、管理密钥或完整账号 ID。
 - 分身只存在于运行时，不复制 OAuth JSON；物理 auth 文件仍保持一个，避免 refresh token 分叉和多文件配置漂移。
 - 每个运行时分身使用唯一 auth ID，静态地址必须来自现有 IPv6 前缀且不能复用现网地址。

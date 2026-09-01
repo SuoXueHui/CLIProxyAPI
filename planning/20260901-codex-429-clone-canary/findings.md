@@ -66,3 +66,13 @@
 - 旧 Core 有 132 个在途请求；直接等待 quiescing 归零会造成新请求排队。第二轮改用 buffer 后，三套 CPA 同时加载完整 auth/model 状态，主机 SSH banner 与公网服务出现间歇性超时，触发资源安全门禁。
 - 回滚后旧 Core 已恢复 `active`/writer/IPv6/plugin，Router 已恢复 `cpa-green`；Manager 仍使用线上原镜像，生产功能未切换。
 - 主机内存不能扩容时，后续只能保留一个候选，候选最大内存上限不得与旧实例叠加超出现场余量；必须取消 buffer，且切换安排在低流量窗口。
+
+## 2026-09-01 单候选正式发布结果
+
+- Core 正式镜像为 `cli-proxy-api:v7.2.147-codex-replica-84c73127-amd64`，Manager 正式镜像为 `cpa-manager-plus:v1.12.6-codex-replica-20cb2f80-amd64`；两者均由 Compose 管理，canonical Core Compose 已更新到 `/data/apps/cli-proxy-api/docker-compose.prod.yml`。
+- 首次单候选激活失败的直接原因不是业务逻辑，而是候选进程启动时读取了旧 `eth0`/`100::/80` egress 配置；运行期间仅改绑定文件不能替换已建立的进程内 controller。以 `eth1`、`103::/80` 从启动时重建同一候选后激活成功。
+- Router 的 proxy/management upstream 最终均为 `cpa-replica-single`；旧 Core 在 outbox `pending=0/inflight=0` 后降为 standby 并停止，保留旧镜像、Compose、数据和日志作为回滚资产。
+- 新 Core 生命周期为 `active`，writer lease、auto refresh、IPv6、plugin runtime 全部启用；49 个 auth、26 个模型、作者插件 v0.3.1356 注册成功，usage durable 队列持续清零且 produced/acked 同步增长。
+- macvlan 容器内有 1 个容器地址和 49 个当前物理 auth 地址；所有地址均为 `nodad` 且无 tentative/dadfailed。选取一个 auth IPv6 做容器 network namespace 出站，外部回显与指定源地址完全一致。
+- 当前生产 auth 默认均未配置 `codex_replica`，因此发布不会自动改变账号拓扑。浏览器实测配置抽屉默认关闭；临时打开未保存时显示分身数 6、单分身并发 10、总容量 60，随后已恢复关闭并退出抽屉。
+- 最终稳定窗口中公网、直连和 Manager health 均为 HTTP 200，Core/Manager/Router restart=0、OOM=false。观察到的一组 16 个 503 来自 `grok-imagine-image` 错误调用 `/v1/chat/completions`，与 Codex 分身发布无关；窗口内没有 Core 429。

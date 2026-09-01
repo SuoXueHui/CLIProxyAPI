@@ -28,3 +28,11 @@
 - 2026-09-01：首次正式切换按 quiescing 顺序验证并触发回滚：旧 Core 长连接未在 90 秒内清零，新候选出现 503/上游限流，Router 已恢复旧 upstream，旧 Core 恢复 `active`，生产切换未完成。
 - 2026-09-01：为避免双候选资源叠加，启动第二个 buffer 后主机出现 SSH banner/公网间歇性空响应；已执行停止删除候选命令，当前不再继续发布，等待 SSH 可稳定复核回收结果。
 - 2026-09-01：用户确认主机内存无法扩容；重试方案固定为“旧 Core + 单候选”，不运行 buffer，不同时构建/运行多套 CPA，Manager 暂不切换。
+- 2026-09-01：发现只读候选期间 durable usage `claim/ack` 被生命周期中间件拦截为 503；新增仅放行 usage delivery 的回归与实现，Core 提交 `84c73127` 已推送，下一次单候选镜像必须基于该提交重建。
+- 2026-09-01：用户确认继续任务且主机不可扩容；上一轮候选已清理，旧 Core/Router/Manager 恢复运行，开始基于 `84c73127` 的单候选重试。
+- 2026-09-01：基于 `84c73127` 构建并启动唯一候选，候选只读流量期间的 14K+ usage 事件已通过新 claim/ack 放行逻辑完整消费，旧 Core outbox 同样在降级前清零。
+- 2026-09-01：首次激活定位到候选进程内 egress controller 仍使用启动时旧配置；恢复旧 Core active 后，以 `eth1`、`2610:150:805f:f80e:103::/80` 重建同一候选，未增加第二候选。
+- 2026-09-01：重建候选激活成功，writer/lease/refresh/IPv6/plugin 全部为 true；容器 network namespace IPv6 外部回显与指定源地址一致，作者插件 v0.3.1356 注册成功。
+- 2026-09-01：将候选纳入 `production-single-compose.yml` 并同步为 canonical `/data/apps/cli-proxy-api/docker-compose.prod.yml`；旧 Core outbox 清零后停止，释放约 4.2 GiB 内存并保留回滚资产。
+- 2026-09-01：Router proxy/management upstream 均切到 `cpa-replica-single`；发布 Manager 镜像 `v1.12.6-codex-replica-20cb2f80-amd64`，Core、Manager、Router 均 healthy、restart=0、OOM=false。
+- 2026-09-01：线上浏览器验证账号列表为 49 个物理凭证、Codex 36 行；配置抽屉分身模式默认关闭，开启未保存时默认 6×10、总容量 60，控制台无错误，已恢复未保存状态并关闭抽屉。

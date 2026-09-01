@@ -1,0 +1,49 @@
+name: rollout-codex-replica-84c73127
+
+services:
+  cli-proxy-api:
+    image: cli-proxy-api:v7.2.147-codex-replica-84c73127-amd64
+    pull_policy: never
+    container_name: cli-proxy-api-replica-single-84c73127
+    restart: unless-stopped
+    env_file:
+      - /data/apps/cli-proxy-api/releases/stability-fixes-e9a7e041-20260901T020947Z/green/green.env
+    environment:
+      GOMEMLIMIT: 16GiB
+      CLIPROXY_LIFECYCLE_MODE: standby
+      CLIPROXY_WRITER_LOCK_PATH: /CLIProxyAPI/runtime/credential-writer.lock
+    mem_limit: 24g
+    memswap_limit: 24g
+    pids_limit: 4096
+    cap_add:
+      - NET_ADMIN
+    stop_grace_period: 24h
+    ports:
+      - "127.0.0.1:18388:8317"
+    volumes:
+      - /data/apps/cli-proxy-api/releases/codex-replica-84c73127-20260901T095419Z/candidate/config.yaml:/CLIProxyAPI/config.yaml:ro
+      - /data/apps/cli-proxy-api/auths:/root/.cli-proxy-api:rw
+      - /data/apps/cli-proxy-api/plugins:/CLIProxyAPI/plugins:rw
+      - /data/apps/cli-proxy-api/releases/codex-replica-84c73127-20260901T095419Z/candidate/data:/CLIProxyAPI/data:rw
+      - /data/apps/cli-proxy-api/releases/codex-replica-84c73127-20260901T095419Z/candidate/logs:/CLIProxyAPI/logs:rw
+      - /data/apps/cli-proxy-api/runtime:/CLIProxyAPI/runtime:rw
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8317'"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      backend:
+        aliases:
+          - cpa-replica-single
+      egress:
+        ipv6_address: 2610:150:805f:f80e:103::11
+
+networks:
+  backend:
+    name: cpa-router-backend
+    external: true
+  egress:
+    name: cpa-v6-direct
+    external: true
