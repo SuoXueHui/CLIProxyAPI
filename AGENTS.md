@@ -53,8 +53,12 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
   `connection timed out=0`. Remove old containers before reusing their IPv6
   addresses so stale NDP/MAC mappings cannot black-hole the new container.
 - Preserve `nodad` handling for allocated account IPv6 addresses and keep
-  `CAP_NET_ADMIN`, `iproute2`, and the configured egress prefix in the final
-  Compose definition. Do not test only on the host namespace.
+  `CAP_NET_ADMIN`, `iproute2`, the configured egress prefix, and a stable
+  egress MAC address in the final Compose definition. After an ownership
+  transfer, announce every adopted account address from the new container
+  namespace and prove source-bound TCP/HTTP connectivity; removing the old
+  container alone may not refresh upstream neighbor entries. Do not test only
+  on the host namespace.
 - After rollout, compare current-window errors with cumulative log counters;
   historical timeout counts must not be reported as newly introduced failures.
 - Release acceptance must include: active image/version and plugin registration,
