@@ -90,6 +90,12 @@ type Service struct {
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
 
+	// xaiModelDiscovery keeps process-local model snapshots for individual xAI OAuth auths.
+	xaiModelDiscovery       *xaiOAuthModelDiscovery
+	xaiModelDiscoveryMu     sync.Mutex
+	xaiModelDiscoveryCancel context.CancelFunc
+	xaiModelDiscoveryDone   chan struct{}
+
 	// cooldownStateStore persists runtime cooldown state when enabled.
 	cooldownStateStore coreauth.CooldownStateStore
 

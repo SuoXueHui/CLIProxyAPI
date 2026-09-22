@@ -433,6 +433,9 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 		return
 	}
 	id = strings.TrimSpace(id)
+	if s.xaiModelDiscovery != nil {
+		s.xaiModelDiscovery.forgetAuth(id)
+	}
 	var provider string
 	if existing, ok := s.coreManager.GetByID(id); ok && existing != nil {
 		provider = strings.TrimSpace(existing.Provider)

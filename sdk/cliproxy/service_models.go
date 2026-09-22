@@ -146,6 +146,10 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "xai":
 		models = registry.GetXAIModels()
+		if authKind == coreauth.AuthKindOAuth && s.xaiModelDiscovery != nil {
+			discoveredModels, discovered := s.xaiModelDiscovery.modelsForAuth(a)
+			models = resolveXAIOAuthModels(models, discoveredModels, discovered)
+		}
 		if entry := s.resolveConfigXAIKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildXAIConfigModels(entry)

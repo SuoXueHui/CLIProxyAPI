@@ -290,6 +290,7 @@ func (b *Builder) Build() (*Service, error) {
 		writerLease:         writerLease,
 		writerLeasePath:     writerLeasePath,
 	}
+	service.initializeXAIOAuthModelDiscovery()
 	service.configureLifecycleControl()
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))

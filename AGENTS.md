@@ -102,6 +102,13 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - File-based config omitting `routing.adaptive-auth` keeps the active compatibility default. Programmatic callers that want the active defaults should use `DefaultAdaptiveAuthConfig`; a zero-value programmatic config represents disabled scheduling.
 - Apply adaptive soft penalties only after hard availability filtering. Soft state must never be able to manufacture `auth_unavailable` or HTTP 503.
 
+## xAI OAuth Model Discovery Semantics
+- xAI OAuth chat models are discovered per credential from its active CLI Chat Proxy `/models` surface. Before the first successful snapshot, use the shared static catalog as the availability fallback.
+- After a successful snapshot, discovered chat IDs are authoritative for that credential. Use matching static entries only to enrich metadata; never union unrelated static chat models into the credential's entitlement set.
+- Preserve static `grok-imagine-image*` and `grok-imagine-video*` built-ins because they use separate media API surfaces and are not represented by CLI Chat Proxy discovery.
+- Keep discovery snapshots process-local, bind them to the logical credential identity, preserve the last successful snapshot on transient failure or empty responses, and reject results from deleted or replaced credentials.
+- Discovery is lifecycle-managed background work: active instances refresh immediately and periodically, while standby, read-only, draining, demoted, and shutting-down instances must not continue upstream discovery calls.
+
 ## Codex Usage Identity Semantics
 - `chatgpt_account_id` identifies a shared ChatGPT workspace/Space, not an individual Business member. Never use it alone as a per-credential history key.
 - Usage and management projections may expose only an opaque member fingerprint derived from `chatgpt_user_id`, with issuer-scoped `sub` as the compatibility fallback. Never expose the raw member ID.

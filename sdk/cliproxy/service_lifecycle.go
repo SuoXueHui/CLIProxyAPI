@@ -206,6 +206,9 @@ func (s *Service) Run(ctx context.Context) error {
 	s.registerModelRefreshCallback()
 	if !homeEnabled {
 		s.registerLoadedAuthModels(ctx)
+		if s.lifecycleActive() {
+			s.startXAIOAuthModelDiscovery(ctx)
+		}
 	}
 
 	// Prefer core auth manager auto refresh if available.
@@ -290,6 +293,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.homeLifecycleMu.Unlock()
 
 		// legacy refresh loop removed; only stopping core auth manager below
+		s.stopXAIOAuthModelDiscovery()
 
 		if s.watcherCancel != nil {
 			s.watcherCancel()

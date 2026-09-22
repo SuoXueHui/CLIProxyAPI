@@ -129,6 +129,7 @@ func (s *Service) activateLifecycleLocked(ctx context.Context) (components lifec
 	if s.coreManager != nil {
 		s.coreManager.StartAutoRefresh(context.Background(), lifecycleAutoRefreshInterval)
 	}
+	s.startXAIOAuthModelDiscovery(context.Background())
 	rollback = false
 	return s.snapshotLifecycleComponents(s.coreManager != nil), nil
 }
@@ -257,6 +258,7 @@ func (s *Service) deactivateLifecycle(ctx context.Context) (lifecycle.Components
 }
 
 func (s *Service) stopLifecycleBackground() {
+	s.stopXAIOAuthModelDiscovery()
 	if s.watcherCancel != nil {
 		s.watcherCancel()
 		s.watcherCancel = nil
